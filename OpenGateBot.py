@@ -3,6 +3,7 @@ import re
 import time
 import asyncio
 import pytz
+import ssl
 from datetime import datetime, time as dtime
 from datetime import datetime
 from dotenv import load_dotenv
@@ -27,6 +28,7 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 SHEET_ID = os.getenv("SHEET_ID")
 GOOGLE_CREDENTIALS_FILE = "credentials.json"
 ASK_NAME, ASK_PHONE = range(2)
+DOMAIN_IP = os.getenv("DOMAIN_IP")
 #
 
 
@@ -377,7 +379,7 @@ async def ask_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Ответ пользователю: скрываем клавиатуру и говорим, что заявка обрабатывается
     await safe_reply(
         update.message,
-        "📨 Заявка обрабатывается. Пожалуйста, подождите подтверждения от администратора. Нажмите Проверить статус через некоторое время.",
+        "📨 Заявка обрабатывается. Пожалуйста, подождите подтверждения от администратора.",
         reply_markup=get_main_menu("pending"),
     )
 
@@ -545,6 +547,11 @@ async def handle_admin_decision(update: Update, context: ContextTypes.DEFAULT_TY
                 await query.edit_message_text(
                     f"✅ Пользователь {fio} ({mention}) одобрен."
                 )
+                await context.bot.send_message(
+                    chat_id=int(user_id),
+                    text="✅ Ваша заявка одобрена! Доступ открыт. Добро пожаловать!",
+                    reply_markup=get_main_menu("yes"),
+                )
             elif action == "reject":
                 safe_update_cell(sheet, i, 5, "no")
                 log(f"[❌] Пользователь отклонён — {fio} ({mention})")
@@ -592,8 +599,28 @@ async def main():
     log("🤖 Бот запущен. Введите /start в Telegram.")
     await app.initialize()
     await app.start()
-    await app.updater.start_polling()
-    await asyncio.Event().wait()
+
+    mode = os.getenv("MODE", "polling")
+    if mode == "webhook":
+        cert_path = os.path.abspath("certs/public.pem")  # путь до публичного ключа
+        privkey_path = os.path.abspath("certs/private.key")  # путь до приватного ключа
+
+        await app.bot.set_webhook(
+            url=f"https://{DOMAIN_IP}:8443",
+            certificate=open(cert_path, "rb"),  # только если нужен сертификат
+        )
+
+        await app.run_webhook(
+            listen="0.0.0.0",
+            port=8443,
+            url_path="",
+            cert=cert_path,
+            key=privkey_path,
+            webhook_url=f"https://{DOMAIN_IP}:8443",
+        )
+    else:
+        await app.updater.start_polling()
+        await asyncio.Event().wait()
 
 
 if __name__ == "__main__":
