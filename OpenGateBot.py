@@ -467,7 +467,7 @@ async def open_gate(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     )
                     await safe_reply(
                         update.message,
-                        "🚪 Калитка открывается/закрывается... (заглушка)",
+                        "🚪 Калитка открывается/закрывается..(заглушка)",
                     )
                 else:
                     log(
