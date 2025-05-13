@@ -602,8 +602,8 @@ async def main():
 
     mode = os.getenv("MODE", "polling")
     if mode == "webhook":
-        cert_path = os.path.abspath("certs/public.pem")  # путь до публичного ключа
-        privkey_path = os.path.abspath("certs/private.key")  # путь до приватного ключа
+        cert_path = os.path.abspath("certs/webhook.crt")  # путь до публичного ключа
+        privkey_path = os.path.abspath("certs/webhook.key")  # путь до приватного ключа
 
         await app.bot.set_webhook(
             url=f"https://{DOMAIN_IP}:8443",
