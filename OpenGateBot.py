@@ -2,6 +2,7 @@ import os
 import re
 import time
 import asyncio
+import uvloop
 import pytz
 import ssl
 from datetime import datetime, time as dtime
@@ -624,4 +625,9 @@ async def main():
 
 
 if __name__ == "__main__":
+    try:
+        asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
+    except ImportError:
+        pass
+
     asyncio.run(main())
