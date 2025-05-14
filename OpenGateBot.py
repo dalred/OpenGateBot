@@ -4,6 +4,7 @@ import time
 import asyncio
 import pytz
 import ssl
+import nest_asyncio
 from datetime import datetime, time as dtime
 from datetime import datetime
 from dotenv import load_dotenv
@@ -618,7 +619,5 @@ async def main():
 
 
 if __name__ == "__main__":
-    import nest_asyncio
-
     nest_asyncio.apply()
     asyncio.run(main())
