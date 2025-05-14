@@ -8,6 +8,8 @@ __pycache__/
 .env
 credentials.json
 
+venv/
+
 # Logs
 logs/
 

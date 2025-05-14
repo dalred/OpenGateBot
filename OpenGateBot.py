@@ -554,11 +554,14 @@ async def main():
     app.add_handler(CommandHandler("help", help_command))
 
     log("🤖 Бот запущен. Введите /start в Telegram.")
-    await app.initialize()
-    await app.start()
-    await app.updater.start_polling()
-    await asyncio.Event().wait()
+    # await app.initialize()
+    # await app.start()
+    await app.run_polling()
+    # await asyncio.Event().wait()
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    import nest_asyncio
+
+    nest_asyncio.apply()
+    asyncio.get_event_loop().run_until_complete(main())
