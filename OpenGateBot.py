@@ -2,9 +2,7 @@ import os
 import re
 import time
 import asyncio
-import uvloop
 import pytz
-import ssl
 from datetime import datetime, time as dtime
 from datetime import datetime
 from dotenv import load_dotenv
@@ -29,8 +27,6 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 SHEET_ID = os.getenv("SHEET_ID")
 GOOGLE_CREDENTIALS_FILE = "credentials.json"
 ASK_NAME, ASK_PHONE = range(2)
-DOMAIN_IP = os.getenv("DOMAIN_IP")
-#
 
 
 def check_access_time(access_time_str: str) -> bool:
@@ -87,49 +83,12 @@ def check_access_time(access_time_str: str) -> bool:
 
 
 def log(msg):
-    now = datetime.now()
-    timestamp = now.strftime("%d.%m.%Y %H:%M:%S")
-    log_line = f"[{timestamp}] {msg}"
-
-    # Путь к лог-файлу по дате, например: logs/2025-05-13.log
-    log_dir = "logs"
-    os.makedirs(log_dir, exist_ok=True)
-    log_filename = os.path.join(log_dir, f"{now.strftime('%d-%m-%Y')}.log")
-
-    # Пишем в файл + выводим в консоль
-    with open(log_filename, "a", encoding="utf-8") as f:
-        f.write(log_line + "\n")
-
-    print(log_line)
+    now = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
+    print(f"[{now}] {msg}")
 
 
 def normalize_phone(phone):
     return re.sub(r"\D", "", str(phone))[-10:] if phone else ""
-
-
-def safe_gspread_call(func, *args, retries=3, delay=2, **kwargs):
-    for attempt in range(1, retries + 1):
-        try:
-            return func(*args, **kwargs)
-        except Exception as e:
-            log(f"[⚠️] GSpread error ({attempt}/{retries}): {e}")
-            time.sleep(delay)
-    log(f"[❌] Не удалось выполнить {func.__name__} после {retries} попыток.")
-    return None
-
-
-def safe_get_all_records(sheet):
-    return safe_gspread_call(sheet.get_all_records) or []
-
-
-def safe_update_cell(sheet, row, col, value):
-    return safe_gspread_call(sheet.update_cell, row, col, value)
-
-
-def safe_append_row(sheet, row_values, value_input_option="USER_ENTERED"):
-    return safe_gspread_call(
-        sheet.append_row, row_values, value_input_option=value_input_option
-    )
 
 
 def get_sheet(retries=3, delay=2):
@@ -154,7 +113,7 @@ def get_user_status(user_id: str) -> str:
     sheet = get_sheet()
     if not sheet:
         return "none"
-    records = safe_get_all_records(sheet)
+    records = sheet.get_all_records()
     for row in records:
         if str(row.get("user_id")) == user_id:
             return row.get("aprove", "").strip().lower() or "none"
@@ -205,7 +164,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     status = "none"
     sheet = get_sheet()
     if sheet:
-        records = safe_get_all_records(sheet)
+        records = sheet.get_all_records()
         for row in records:
             if str(row.get("user_id")) == user_id:
                 status = row.get("aprove", "").strip().lower()
@@ -286,7 +245,7 @@ async def ask_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ASK_PHONE
 
     phone = normalize_phone(phone)
-    records = safe_get_all_records(sheet)
+    records = sheet.get_all_records()
 
     # === Смена номера ===
     if context.user_data.get("change_mode"):
@@ -305,8 +264,8 @@ async def ask_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     )
                     return ConversationHandler.END
 
-                safe_update_cell(sheet, i, 4, phone)
-                safe_update_cell(sheet, i, 5, "pending")
+                sheet.update_cell(i, 4, phone)
+                sheet.update_cell(i, 5, "pending")
                 log(f"[🔁] {user_id} сменил номер на {phone}, статус сброшен")
                 status = get_user_status(user_id)
                 await safe_reply(
@@ -337,8 +296,7 @@ async def ask_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
     fio = context.user_data.get("fio", "")
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     telegram_link = f"https://t.me/{user.username}" if user.username else ""
-    safe_append_row(
-        sheet,
+    sheet.append_row(
         [
             user_id,
             user.username or "",
@@ -377,13 +335,12 @@ async def ask_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown",
     )
 
-    # Ответ пользователю: скрываем клавиатуру и говорим, что заявка обрабатывается
+    # ✅ Ответ пользователю
     await safe_reply(
         update.message,
-        "📨 Заявка обрабатывается. Пожалуйста, подождите подтверждения от администратора.",
+        "✅ Заявка отправлена. Ожидайте одобрения.",
         reply_markup=get_main_menu("pending"),
     )
-
     return ConversationHandler.END
 
 
@@ -395,7 +352,7 @@ async def check_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await safe_reply(update.message, "❌ Ошибка подключения к таблице.")
         return
 
-    records = safe_get_all_records(sheet)
+    records = sheet.get_all_records()
     for row in records:
         if str(row.get("user_id")) == user_id:
             status = row.get("aprove", "").strip().lower()
@@ -457,7 +414,7 @@ async def open_gate(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await safe_reply(update.message, "❌ Ошибка доступа к таблице.")
         return
 
-    records = safe_get_all_records(sheet)
+    records = sheet.get_all_records()
     for row in records:
         if str(row.get("user_id")) == user_id:
             status = row.get("aprove", "").strip().lower()
@@ -470,11 +427,11 @@ async def open_gate(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     )
                     await safe_reply(
                         update.message,
-                        "🚪 Калитка открывается/закрывается..(заглушка)",
+                        "🚪 Калитка открывается/закрывается... (заглушка)",
                     )
                 else:
                     log(
-                        f"[⏰] Попытка доступа к калитке вне времени: user_id={user_id},username={user.username} access_time={access_time}"
+                        f"[⏰] Доступ вне времени: user_id={user_id}, access_time={access_time}"
                     )
                     await safe_reply(
                         update.message,
@@ -534,7 +491,7 @@ async def handle_admin_decision(update: Update, context: ContextTypes.DEFAULT_TY
         return
 
     action, user_id = data.split(":", 1)
-    records = safe_get_all_records(sheet)
+    records = sheet.get_all_records()
 
     for i, row in enumerate(records, start=2):
         if str(row.get("user_id")) == user_id:
@@ -560,7 +517,6 @@ async def handle_admin_decision(update: Update, context: ContextTypes.DEFAULT_TY
                     f"❌ Пользователь {fio} ({mention}) отклонён."
                 )
             return
-
     await query.edit_message_text("⚠️ Пользователь не найден в таблице.")
 
 
@@ -600,34 +556,9 @@ async def main():
     log("🤖 Бот запущен. Введите /start в Telegram.")
     await app.initialize()
     await app.start()
-
-    mode = os.getenv("MODE", "polling")
-    if mode == "webhook":
-        cert_path = os.path.abspath("certs/webhook.crt")  # путь до публичного ключа
-        privkey_path = os.path.abspath("certs/webhook.key")  # путь до приватного ключа
-
-        await app.bot.set_webhook(
-            url=f"https://{DOMAIN_IP}:8443",
-            certificate=open(cert_path, "rb"),  # только если нужен сертификат
-        )
-
-        await app.run_webhook(
-            listen="0.0.0.0",
-            port=8443,
-            url_path="",
-            cert=cert_path,
-            key=privkey_path,
-            webhook_url=f"https://{DOMAIN_IP}:8443",
-        )
-    else:
-        await app.updater.start_polling()
-        await asyncio.Event().wait()
+    await app.updater.start_polling()
+    await asyncio.Event().wait()
 
 
 if __name__ == "__main__":
-    try:
-        asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
-    except ImportError:
-        pass
-
     asyncio.run(main())
