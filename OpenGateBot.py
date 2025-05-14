@@ -2,7 +2,6 @@ import os
 import re
 import time
 import asyncio
-import uvloop
 import pytz
 import ssl
 from datetime import datetime, time as dtime
@@ -10,6 +9,7 @@ from datetime import datetime
 from dotenv import load_dotenv
 from telegram import Update, KeyboardButton, ReplyKeyboardMarkup
 from telegram.ext import (
+    Application,
     ApplicationBuilder,
     CommandHandler,
     MessageHandler,
@@ -30,6 +30,7 @@ SHEET_ID = os.getenv("SHEET_ID")
 GOOGLE_CREDENTIALS_FILE = "credentials.json"
 ASK_NAME, ASK_PHONE = range(2)
 DOMAIN_IP = os.getenv("DOMAIN_IP")
+MODE = os.getenv("MODE", "polling").lower()
 #
 
 
@@ -565,8 +566,11 @@ async def handle_admin_decision(update: Update, context: ContextTypes.DEFAULT_TY
 
 
 async def main():
+    print("🤖 Инициализация бота...")
+
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
+    # Обработчики
     conv_handler = ConversationHandler(
         entry_points=[
             MessageHandler(filters.Regex("📋 Зарегистрироваться"), register_start),
@@ -584,50 +588,37 @@ async def main():
 
     app.add_handler(conv_handler)
     app.add_handler(CallbackQueryHandler(handle_admin_decision))
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("myid", my_id))
     app.add_handler(MessageHandler(filters.Regex("🏁 Начало"), start))
     app.add_handler(
         MessageHandler(filters.Regex("🔓 Открыть/закрыть калитку"), open_gate)
     )
-    app.add_handler(
-        MessageHandler(filters.Regex("🔄 Проверить статус"), check_status)
-    )  # ⬅️ сюда
+    app.add_handler(MessageHandler(filters.Regex("🔄 Проверить статус"), check_status))
     app.add_handler(MessageHandler(filters.Regex("ℹ️ Помощь"), help_button))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, unknown_input))
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("help", help_command))
 
-    log("🤖 Бот запущен. Введите /start в Telegram.")
-    await app.initialize()
-    await app.start()
+    if MODE == "webhook":
+        print("🚀 Запуск в WEBHOOK режиме")
 
-    mode = os.getenv("MODE", "polling")
-    if mode == "webhook":
-        cert_path = os.path.abspath("certs/webhook.crt")  # путь до публичного ключа
-        privkey_path = os.path.abspath("certs/webhook.key")  # путь до приватного ключа
+        PORT = int(os.getenv("PORT", 8443))
+        webhook_url = f"https://{DOMAIN_IP}:{PORT}/bot{BOT_TOKEN}"
 
-        await app.bot.set_webhook(
-            url=f"https://{DOMAIN_IP}:8443",
-            certificate=open(cert_path, "rb"),  # только если нужен сертификат
-        )
+        await app.bot.set_webhook(webhook_url)
 
         await app.run_webhook(
             listen="0.0.0.0",
-            port=8443,
-            url_path="",
-            cert=cert_path,
-            key=privkey_path,
-            webhook_url=f"https://{DOMAIN_IP}:8443",
+            port=PORT,
+            webhook_url=webhook_url,
+            cert="certs/webhook.crt",
+            key="certs/webhook.key",
+            url_path=f"bot{BOT_TOKEN}",
         )
-    else:
-        await app.updater.start_polling()
-        await asyncio.Event().wait()
 
 
 if __name__ == "__main__":
-    try:
-        asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
-    except ImportError:
-        pass
+    import nest_asyncio
 
+    nest_asyncio.apply()
     asyncio.run(main())
