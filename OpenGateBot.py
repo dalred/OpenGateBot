@@ -3,8 +3,13 @@ import re
 import time
 import asyncio
 import pytz
+import json
+from datetime import datetime, timezone
 from datetime import datetime, time as dtime
 from datetime import datetime
+from datetime import datetime, timedelta
+
+
 from dotenv import load_dotenv
 from telegram import Update, KeyboardButton, ReplyKeyboardMarkup
 from telegram.ext import (
@@ -21,12 +26,42 @@ from telegram.error import NetworkError
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from telegram import InlineKeyboardMarkup, InlineKeyboardButton
+import paho.mqtt.publish as publish
 
 load_dotenv()
+moscow = pytz.timezone("Europe/Moscow")
+MIN_INTERVAL = timedelta(seconds=3)
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 SHEET_ID = os.getenv("SHEET_ID")
 GOOGLE_CREDENTIALS_FILE = "credentials.json"
+MQTT_USER = os.getenv("user_mosquitto")
+MQTT_PASS = os.getenv("password_mosquitto")
+HOSTNAME = os.getenv("DOMAIN_IP")
+
 ASK_NAME, ASK_PHONE = range(2)
+
+
+def send_toggle_to_mqtt(user_id: str, username: str):
+    payload = {
+        "command": "OPEN",
+        "user_id": user_id,
+        "username": username,
+        "timestamp": datetime.now(moscow).isoformat(),
+    }
+
+    try:
+        publish.single(
+            topic="gate/command",
+            payload=json.dumps(payload),
+            hostname=HOSTNAME,
+            port=1883,
+            auth={"username": MQTT_USER, "password": MQTT_PASS},
+        )
+        log(f"[📤] MQTT: отправлено {payload}")
+        return True
+    except Exception as e:
+        log(f"[❌] MQTT ошибка: {e}")
+        return False
 
 
 def check_access_time(access_time_str: str) -> bool:
@@ -408,6 +443,17 @@ async def open_gate(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(user.id)
     username = user.username or "unknown"
 
+    # ⏱️ Антифлуд-проверка
+    now = datetime.now()
+    last_used = context.user_data.get("last_gate_call")
+    if last_used and now - last_used < MIN_INTERVAL:
+        await safe_reply(
+            update.message, "⚠️ Подождите немного перед повторной попыткой."
+        )
+        log(f"❌ Повторное открытие пользователем: user_id={user_id}")
+        return
+    context.user_data["last_gate_call"] = now
+
     sheet = get_sheet()
     if not sheet:
         log(f"❌ Ошибка подключения к Google Sheets")
@@ -425,10 +471,10 @@ async def open_gate(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     log(
                         f"[🔓] Калитка открыта по запросу: user_id={user.id}, username={user.username}"
                     )
-                    await safe_reply(
-                        update.message,
-                        "🚪 Калитка открывается/закрывается... (заглушка)",
-                    )
+                    if send_toggle_to_mqtt(user_id, username):
+                        await safe_reply(
+                            update.message, "🚪 Калитка открывается/закрывается..."
+                        )
                 else:
                     log(
                         f"[⏰] Доступ вне времени: user_id={user_id}, access_time={access_time}"
