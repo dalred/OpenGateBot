@@ -36,7 +36,7 @@ SHEET_ID = os.getenv("SHEET_ID")
 GOOGLE_CREDENTIALS_FILE = "credentials.json"
 MQTT_USER = os.getenv("user_mosquitto")
 MQTT_PASS = os.getenv("password_mosquitto")
-HOSTNAME = os.getenv("DOMAIN_IP")
+HOST = os.getenv("HOST")
 MODE = os.getenv("MODE")
 
 ASK_NAME, ASK_PHONE = range(2)
@@ -54,7 +54,7 @@ def send_toggle_to_mqtt(user_id: str, username: str):
         publish.single(
             topic="gate/command",
             payload=json.dumps(payload),
-            hostname=HOSTNAME,
+            hostname=HOST,
             port=1883,
             auth={"username": MQTT_USER, "password": MQTT_PASS},
         )
