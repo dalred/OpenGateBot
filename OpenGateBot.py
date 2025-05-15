@@ -37,6 +37,7 @@ GOOGLE_CREDENTIALS_FILE = "credentials.json"
 MQTT_USER = os.getenv("user_mosquitto")
 MQTT_PASS = os.getenv("password_mosquitto")
 HOSTNAME = os.getenv("DOMAIN_IP")
+MODE = os.getenv("MODE")
 
 ASK_NAME, ASK_PHONE = range(2)
 
@@ -599,11 +600,25 @@ async def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
 
-    log("🤖 Бот запущен. Введите /start в Telegram.")
-    # await app.initialize()
-    # await app.start()
-    await app.run_polling()
-    # await asyncio.Event().wait()
+    if MODE == "webhook":
+        print("🚀 Запуск в WEBHOOK режиме. Введите /start в Telegram.")
+
+        PORT = int(os.getenv("PORT", 8443))
+        webhook_url = f"https://{DOMAIN_IP}:{PORT}/bot{BOT_TOKEN}"
+
+        await app.bot.set_webhook(webhook_url)
+
+        await app.run_webhook(
+            listen="0.0.0.0",
+            port=PORT,
+            webhook_url=webhook_url,
+            cert="certs/webhook.crt",
+            key="certs/webhook.key",
+            url_path=f"bot{BOT_TOKEN}",
+        )
+    else:
+        log("🚀 Запуск в polling режиме. Введите /start в Telegram.")
+        await app.run_polling()
 
 
 if __name__ == "__main__":
