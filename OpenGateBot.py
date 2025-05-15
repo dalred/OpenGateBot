@@ -37,7 +37,9 @@ GOOGLE_CREDENTIALS_FILE = "credentials.json"
 MQTT_USER = os.getenv("user_mosquitto")
 MQTT_PASS = os.getenv("password_mosquitto")
 HOST = os.getenv("HOST")
+DOMAIN_IP = os.getenv("DOMAIN_IP")
 MODE = os.getenv("MODE")
+
 
 ASK_NAME, ASK_PHONE = range(2)
 
