@@ -28,6 +28,7 @@ from oauth2client.service_account import ServiceAccountCredentials
 from telegram import InlineKeyboardMarkup, InlineKeyboardButton
 import paho.mqtt.publish as publish
 
+
 load_dotenv()
 moscow = pytz.timezone("Europe/Moscow")
 MIN_INTERVAL = timedelta(seconds=3)
@@ -59,6 +60,8 @@ def send_toggle_to_mqtt(user_id: str, username: str):
             hostname=HOST,
             port=1883,
             auth={"username": MQTT_USER, "password": MQTT_PASS},
+            retain=False,
+            qos=0,
         )
         log(f"[📤] MQTT: отправлено {payload}")
         return True
