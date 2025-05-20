@@ -82,7 +82,7 @@ def send_gate_command(command: str, user_id: str, username: str) -> bool:
         "command": command,
         "user_id": user_id,
         "username": username,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "timestamp": datetime.now(moscow).isoformat(),
     }
 
     try:
