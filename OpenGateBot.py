@@ -31,7 +31,8 @@ import paho.mqtt.publish as publish
 
 load_dotenv()
 moscow = pytz.timezone("Europe/Moscow")
-MIN_INTERVAL = timedelta(seconds=3)
+MIN_INTERVAL = timedelta(seconds=4)
+last_used_time = {}
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 SHEET_ID = os.getenv("SHEET_ID")
 GOOGLE_CREDENTIALS_FILE = "credentials.json"
@@ -45,12 +46,43 @@ MODE = os.getenv("MODE")
 ASK_NAME, ASK_PHONE = range(2)
 
 
-def send_toggle_to_mqtt(user_id: str, username: str):
+def log(msg):
+    now = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
+    print(f"[{now}] {msg}")
+
+
+async def is_too_soon(update, context) -> bool:
+    """Проверка антифлуда: возвращает True, если пользователь нажал слишком быстро."""
+    now = datetime.now()
+    last_used = context.user_data.get("last_gate_call")
+
+    if last_used and now - last_used < MIN_INTERVAL:
+        await update.message.reply_text(
+            f"⚠️ Подождите {MIN_INTERVAL.total_seconds():.0f} секунды перед повторной попыткой."
+        )
+        user_id = update.effective_user.id
+        log(f"❌ Повторное открытие пользователем: user_id={user_id}")
+        return True
+
+    context.user_data["last_gate_call"] = now
+    return False
+
+
+def send_gate_command(command: str, user_id: str, username: str) -> bool:
+    from dotenv import load_dotenv
+    import os
+
+    load_dotenv()
+
+    MQTT_USER = os.getenv("user_mosquitto")
+    MQTT_PASS = os.getenv("password_mosquitto")
+    HOST = os.getenv("DOMAIN_IP", "localhost")
+
     payload = {
-        "command": "OPEN",
+        "command": command,
         "user_id": user_id,
         "username": username,
-        "timestamp": datetime.now(moscow).isoformat(),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
     }
 
     try:
@@ -60,13 +92,13 @@ def send_toggle_to_mqtt(user_id: str, username: str):
             hostname=HOST,
             port=1883,
             auth={"username": MQTT_USER, "password": MQTT_PASS},
-            retain=False,
             qos=0,
+            retain=False,
         )
         log(f"[📤] MQTT: отправлено {payload}")
         return True
     except Exception as e:
-        log(f"[❌] MQTT ошибка: {e}")
+        print(f"[❌] MQTT ошибка: {e}")
         return False
 
 
@@ -123,11 +155,6 @@ def check_access_time(access_time_str: str) -> bool:
     return False
 
 
-def log(msg):
-    now = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
-    print(f"[{now}] {msg}")
-
-
 def normalize_phone(phone):
     return re.sub(r"\D", "", str(phone))[-10:] if phone else ""
 
@@ -165,7 +192,8 @@ def get_main_menu(status: str = "none"):
     if status == "yes":
         return ReplyKeyboardMarkup(
             [
-                ["🔓 Открыть/закрыть калитку", "🔁 Изменить номер"],
+                ["🚪 Открыть", "⏹ Остановить", "🔒 Закрыть"],
+                ["🔁 Изменить номер"],
                 ["ℹ️ Помощь", "🏁 Начало"],
             ],
             resize_keyboard=True,
@@ -449,53 +477,14 @@ async def open_gate(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(user.id)
     username = user.username or "unknown"
 
-    # ⏱️ Антифлуд-проверка
-    now = datetime.now()
-    last_used = context.user_data.get("last_gate_call")
-    if last_used and now - last_used < MIN_INTERVAL:
-        await safe_reply(
-            update.message, "⚠️ Подождите немного перед повторной попыткой."
-        )
-        log(f"❌ Повторное открытие пользователем: user_id={user_id}")
-        return
-    context.user_data["last_gate_call"] = now
-
-    sheet = get_sheet()
-    if not sheet:
-        log(f"❌ Ошибка подключения к Google Sheets")
-        await safe_reply(update.message, "❌ Ошибка доступа к таблице.")
+    if await is_too_soon(update, context):
         return
 
-    records = sheet.get_all_records()
-    for row in records:
-        if str(row.get("user_id")) == user_id:
-            status = row.get("aprove", "").strip().lower()
-            access_time = str(row.get("access_time", "always")).strip().lower()
-            if status == "yes":
-                if check_access_time(access_time):
-                    log(f"[🔓] Разрешённый доступ: user_id={user_id}, time OK")
-                    log(
-                        f"[🔓] Калитка открыта по запросу: user_id={user.id}, username={user.username}"
-                    )
-                    if send_toggle_to_mqtt(user_id, username):
-                        await safe_reply(
-                            update.message, "🚪 Калитка открывается/закрывается..."
-                        )
-                else:
-                    log(
-                        f"[⏰] Доступ вне времени: user_id={user_id}, access_time={access_time}"
-                    )
-                    await safe_reply(
-                        update.message,
-                        "🕒 Доступ к калитке возможен только в разрешённое время.",
-                    )
-                return
-            else:
-                log(f"[⛔] Доступ запрещён — user_id: {user_id}, статус: {status}")
-                await safe_reply(update.message, "🚫 Ваш доступ ещё не подтверждён.")
-                return
-    log(f"[❌] Пользователь не найден — user_id: {user_id}, username: {username}")
-    await safe_reply(update.message, "🚫 Вы не зарегистрированы.")
+    if not await is_gate_access_granted(user_id, update):
+        return
+
+    if send_gate_command("OPEN", user_id, username):
+        await safe_reply(update.message, "🚪 Калитка открывается...")
 
 
 async def notify_admin_about_request(
@@ -572,6 +561,59 @@ async def handle_admin_decision(update: Update, context: ContextTypes.DEFAULT_TY
     await query.edit_message_text("⚠️ Пользователь не найден в таблице.")
 
 
+async def stop_gate(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    user_id = str(user.id)
+    username = user.username or "unknown"
+
+    if await is_too_soon(update, context):
+        return
+
+    if not await is_gate_access_granted(user_id, update):
+        return
+
+    if send_gate_command("STOP", str(user.id), user.username or ""):
+        await safe_reply(update.message, "⏹ Калитка остановлена.")
+
+
+async def close_gate(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    user_id = str(user.id)
+    username = user.username or "unknown"
+
+    if await is_too_soon(update, context):
+        return
+
+    if not await is_gate_access_granted(user_id, update):
+        return
+
+    if send_gate_command("CLOSE", user_id, username):
+        await safe_reply(update.message, "🔒 Калитка закрывается.")
+
+
+async def is_gate_access_granted(user_id: str, update: Update) -> bool:
+    sheet = get_sheet()
+    if not sheet:
+        await update.message.reply_text("❌ Ошибка доступа к таблице.")
+        return False
+
+    records = sheet.get_all_records()
+    for row in records:
+        if str(row.get("user_id")) == user_id:
+            status = row.get("aprove", "").strip().lower()
+            if status == "yes":
+                return True
+            elif status == "no":
+                await update.message.reply_text("🚫 Ваш доступ был отклонён.")
+                return False
+            else:
+                await update.message.reply_text("⏳ Ваша заявка ещё рассматривается.")
+                return False
+
+    await update.message.reply_text("🚫 Вы не зарегистрированы.")
+    return False
+
+
 async def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
@@ -595,15 +637,15 @@ async def main():
     app.add_handler(CommandHandler("myid", my_id))
     app.add_handler(MessageHandler(filters.Regex("🏁 Начало"), start))
     app.add_handler(
-        MessageHandler(filters.Regex("🔓 Открыть/закрыть калитку"), open_gate)
-    )
-    app.add_handler(
         MessageHandler(filters.Regex("🔄 Проверить статус"), check_status)
     )  # ⬅️ сюда
     app.add_handler(MessageHandler(filters.Regex("ℹ️ Помощь"), help_button))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, unknown_input))
+    app.add_handler(MessageHandler(filters.Regex("🚪 Открыть"), open_gate))
+    app.add_handler(MessageHandler(filters.Regex("⏹ Остановить"), stop_gate))
+    app.add_handler(MessageHandler(filters.Regex("🔒 Закрыть"), close_gate))
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, unknown_input))
 
     if MODE == "webhook":
         print("🚀 Запуск в WEBHOOK режиме. Введите /start в Telegram.")
