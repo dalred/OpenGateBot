@@ -627,7 +627,12 @@ async def open_gate(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_gate_access_granted(user_id, update):
         return
     else:
-        log(f"[🔓] Разрешённый доступ: user_id={user_id}, time OK")
+        log(f"[🔓] Разрешённый доступ: user_id={user_id}")
+
+    if not await check_access_time(user_id, update):
+        return
+    else:
+        log(f"[🔓] Разрешённый доступ: user_id={user_id} time is OK")
 
     # ⛔ Проверка: если уже другой активный пользователь
     if not await is_gate_available_for_user(user_id, context):
@@ -641,6 +646,72 @@ async def open_gate(update: Update, context: ContextTypes.DEFAULT_TYPE):
     log(f"[🔓] Калитка открыта по запросу: user_id={user.id}, username={user.username}")
 
     # 📲 Формируем клавиатуру
+    dynamic_buttons = get_dynamic_keyboard(context, user_id=user_id)
+    keyboard = get_main_menu("yes", dynamic_buttons)
+
+    await update.message.reply_text(
+        "📤 Команда отправлена. Ожидаем подтверждение от калитки...",
+        reply_markup=keyboard,
+    )
+
+
+async def stop_gate(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    user_id = str(user.id)
+    username = user.username or "unknown"
+
+    if await is_too_soon(update, context):
+        return
+
+    if not await is_gate_access_granted(user_id, update):
+        return
+
+    if not await check_access_time(user_id, update):
+        return
+    else:
+        log(f"[🔓] Разрешённый доступ: user_id={user_id} time is OK")
+
+    if not await is_gate_available_for_user(user_id, context):
+        await update.message.reply_text(
+            "🚫 Калитка сейчас используется другим пользователем."
+        )
+        return
+
+    send_gate_command("STOP", user_id, username)
+
+    dynamic_buttons = get_dynamic_keyboard(context, user_id=user_id)
+    keyboard = get_main_menu("yes", dynamic_buttons)
+
+    await update.message.reply_text(
+        "📤 Команда отправлена. Ожидаем подтверждение от калитки...",
+        reply_markup=keyboard,
+    )
+
+
+async def close_gate(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    user_id = str(user.id)
+    username = user.username or "unknown"
+
+    if await is_too_soon(update, context):
+        return
+
+    if not await is_gate_access_granted(user_id, update):
+        return
+
+    if not await check_access_time(user_id, update):
+        return
+    else:
+        log(f"[🔓] Разрешённый доступ: user_id={user_id} time is OK")
+
+    if not await is_gate_available_for_user(user_id, context):
+        await update.message.reply_text(
+            "🚫 Калитка сейчас используется другим пользователем."
+        )
+        return
+
+    send_gate_command("CLOSE", user_id, username)
+
     dynamic_buttons = get_dynamic_keyboard(context, user_id=user_id)
     keyboard = get_main_menu("yes", dynamic_buttons)
 
@@ -722,62 +793,6 @@ async def handle_admin_decision(update: Update, context: ContextTypes.DEFAULT_TY
                 )
             return
     await query.edit_message_text("⚠️ Пользователь не найден в таблице.")
-
-
-async def stop_gate(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    user_id = str(user.id)
-    username = user.username or "unknown"
-
-    if await is_too_soon(update, context):
-        return
-
-    if not await is_gate_access_granted(user_id, update):
-        return
-
-    if not await is_gate_available_for_user(user_id, context):
-        await update.message.reply_text(
-            "🚫 Калитка сейчас используется другим пользователем."
-        )
-        return
-
-    send_gate_command("STOP", user_id, username)
-
-    dynamic_buttons = get_dynamic_keyboard(context, user_id=user_id)
-    keyboard = get_main_menu("yes", dynamic_buttons)
-
-    await update.message.reply_text(
-        "📤 Команда отправлена. Ожидаем подтверждение от калитки...",
-        reply_markup=keyboard,
-    )
-
-
-async def close_gate(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    user_id = str(user.id)
-    username = user.username or "unknown"
-
-    if await is_too_soon(update, context):
-        return
-
-    if not await is_gate_access_granted(user_id, update):
-        return
-
-    if not await is_gate_available_for_user(user_id, context):
-        await update.message.reply_text(
-            "🚫 Калитка сейчас используется другим пользователем."
-        )
-        return
-
-    send_gate_command("CLOSE", user_id, username)
-
-    dynamic_buttons = get_dynamic_keyboard(context, user_id=user_id)
-    keyboard = get_main_menu("yes", dynamic_buttons)
-
-    await update.message.reply_text(
-        "📤 Команда отправлена. Ожидаем подтверждение от калитки...",
-        reply_markup=keyboard,
-    )
 
 
 async def is_gate_access_granted(user_id: str, update: Update) -> bool:
