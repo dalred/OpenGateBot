@@ -3,12 +3,12 @@ import re
 import time
 import asyncio
 import pytz
-import json
+import json, random
 from datetime import datetime, timezone
 from datetime import datetime, time as dtime
 from datetime import datetime
 from datetime import datetime, timedelta
-
+import traceback
 
 from dotenv import load_dotenv
 from telegram import Update, KeyboardButton, ReplyKeyboardMarkup
@@ -27,11 +27,12 @@ import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from telegram import InlineKeyboardMarkup, InlineKeyboardButton
 import paho.mqtt.publish as publish
+import paho.mqtt.client as mqtt
 
 
 load_dotenv()
 moscow = pytz.timezone("Europe/Moscow")
-MIN_INTERVAL = timedelta(seconds=4)
+MIN_INTERVAL = timedelta(seconds=5)
 last_used_time = {}
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 SHEET_ID = os.getenv("SHEET_ID")
@@ -68,15 +69,147 @@ async def is_too_soon(update, context) -> bool:
     return False
 
 
+gate_state = {"current": "IDLE"}
+active_users = {}
+
+
+async def is_gate_available_for_user(
+    user_id: str, context: ContextTypes.DEFAULT_TYPE
+) -> bool:
+    last_user_id = context.bot_data.get("last_active_user_id")
+    state = gate_state.get("current", "IDLE")
+
+    if last_user_id and last_user_id != user_id and state != "IDLE":
+        return False  # Калитка занята другим
+    return True  # Всё в порядке
+
+
+def on_disconnect(client, userdata, rc, properties):
+    if rc != 0:
+        log(f"[⚠️] MQTT отключился неожиданно (rc={rc}) — пытаемся переподключиться...")
+        try:
+            client.reconnect()
+            log("[🔁] Попытка переподключения отправлена")
+        except Exception as e:
+            log(f"[❌] Ошибка при переподключении: {e}")
+    else:
+        log("[ℹ️] MQTT отключился по инициативе клиента (rc=0)")
+
+
+def get_dynamic_keyboard(context, update=None, user_id=None):
+    current_user_id = user_id or (update.effective_user.id if update else None)
+    last_user_id = context.bot_data.get("last_active_user_id")
+    state = gate_state.get("current", "IDLE")
+
+    # log(
+    #     f"[🔍] Проверка доступа: current_user={current_user_id}, last_user={last_user_id}, state={state}"
+    # )
+
+    # log(
+    #     f"[📲] Кнопки запрошены: user_id={current_user_id}, state={state}, last_user={last_user_id}"
+    # )
+
+    # IDLE — доступ открыт всем (начало взаимодействия)
+    if state == "IDLE":
+        log("[🎛️] Отдаем кнопку: 🚪 Открыть (IDLE)")
+        return [["🚪 Открыть"]]
+
+    # Все остальные состояния — только для активного пользователя
+    if not last_user_id or str(current_user_id) != str(last_user_id):
+        log("[🔒] Пользователь не является активным — кнопки не отображаются")
+        return None
+
+    if state in ("OPENING", "CLOSING"):
+        log("[🎛️] Отдаем кнопку: ⏹ Остановить")
+        return [["⏹ Остановить"]]
+    elif state == "STOPPED":
+        log("[🎛️] Отдаем кнопку: 🔒 Закрыть")
+        return [["🔒 Закрыть"]]
+    else:
+        log("[🎛️] Отдаем кнопку: ℹ️ Помощь (по умолчанию)")
+        return [["ℹ️ Помощь"]]
+
+
+def on_mqtt_message(client, userdata, msg, properties=None):
+    payload = msg.payload.decode()
+    previous_state = gate_state.get("current")
+
+    if previous_state == payload:
+        log(f"[MQTT] 🔁 Повтор состояния: {payload} — пропускаем")
+        return
+
+    if msg.topic != "gate/status":
+        return
+
+    app = userdata["app"]
+    context = userdata["context"]
+    loop = app.bot_data.get("event_loop")
+
+    user_id = context.bot_data.get("last_active_user_id")
+
+    log(f"[MQTT] 📥 MQTT получено: [{msg.topic}] {payload}")
+    # log(f"[MQTT] DEBUG FULL RAW: topic={msg.topic}, payload={payload}, mid={msg.mid}")
+    # log(f"[MQTT] msg.mid = {msg.mid}")
+    # log(f"[MQTT] Состояние до обновления: {previous_state} → {payload}")
+    log(f"[MQTT] Активный пользователь: {user_id}")
+
+    gate_state["current"] = payload
+    log(f"[MQTT] Калитка в состоянии: {payload}")
+
+    if payload == "IDLE":
+        context.bot_data["last_active_user_id"] = None
+        log("[🔁] Сброс активного пользователя (IDLE)")
+        return  # Ничего не отправляем, просто сбрасываем
+
+    if user_id:
+        dynamic_buttons = get_dynamic_keyboard(context, user_id=user_id)
+        keyboard = get_main_menu(status="yes", dynamic_buttons=dynamic_buttons)
+
+        # log(
+        #     f"[📤] Отправка клавиатуры пользователю {user_id} с кнопками: {keyboard.keyboard}"
+        # )
+
+        future = asyncio.run_coroutine_threadsafe(
+            app.bot.send_message(
+                chat_id=user_id,
+                text=f"🔄 Состояние калитки: {payload}",
+                reply_markup=keyboard,
+            ),
+            loop,
+        )
+
+        try:
+            future.result(timeout=10)
+            log(f"[✅] Сообщение отправлено Telegram пользователю {user_id}")
+        except Exception as e:
+            log(f"[❌] Ошибка при отправке сообщения: {e}")
+
+
+def init_mqtt(application, context):
+    client_id = f"client_{random.randint(1, 100000)}"
+    client = mqtt.Client(client_id=client_id, protocol=mqtt.MQTTv5)
+
+    client.username_pw_set(username=MQTT_USER, password=MQTT_PASS)
+    client.user_data_set({"app": application, "context": context})
+    client.on_message = on_mqtt_message
+    client.on_disconnect = on_disconnect  # ⬅️ ВЕШАЕМ после создания клиента
+
+    try:
+        client.connect(HOST, port=1883, keepalive=60)
+    except Exception as e:
+        log(f"[❌] Ошибка MQTT подключения: {e}")
+        return
+
+    client.subscribe("gate/status")
+    log(f"[MQTT] Подписка вызвана (в init_mqtt) → client_id={client_id}")
+    log("[MQTT] ✅ Подписка на gate/status выполнена")
+    client.loop_start()
+
+
 def send_gate_command(command: str, user_id: str, username: str) -> bool:
-    from dotenv import load_dotenv
-    import os
-
-    load_dotenv()
-
-    MQTT_USER = os.getenv("user_mosquitto")
-    MQTT_PASS = os.getenv("password_mosquitto")
-    HOST = os.getenv("DOMAIN_IP", "localhost")
+    if not MQTT_USER or not MQTT_PASS:
+        log("❌ MQTT переменные окружения не заданы.")
+        return False
 
     payload = {
         "command": command,
@@ -188,31 +321,31 @@ def get_user_status(user_id: str) -> str:
     return "none"
 
 
-def get_main_menu(status: str = "none"):
+def get_main_menu(status: str = "none", dynamic_buttons=None):
+    keyboard = []
+
     if status == "yes":
-        return ReplyKeyboardMarkup(
-            [
-                ["🚪 Открыть", "⏹ Остановить", "🔒 Закрыть"],
-                ["🔁 Изменить номер"],
-                ["ℹ️ Помощь", "🏁 Начало"],
-            ],
-            resize_keyboard=True,
-        )
+        if dynamic_buttons is not None and len(dynamic_buttons) > 0:
+            keyboard.append(dynamic_buttons[0])
+        else:
+            keyboard.append(["🚪 Открыть"])  # fallback только на открытие
+
+        keyboard.append(["🔁 Изменить номер"])
+        keyboard.append(["ℹ️ Помощь", "🏁 Начало"])
+
     elif status == "no":
-        return ReplyKeyboardMarkup(
-            [["🔄 Проверить статус", "ℹ️ Помощь", "🏁 Начало"]],
-            resize_keyboard=True,
-        )
+        keyboard = [["🔄 Проверить статус", "ℹ️ Помощь", "🏁 Начало"]]
+
     elif status == "pending":
-        return ReplyKeyboardMarkup(
-            [["🔄 Проверить статус", "🔁 Изменить номер", "ℹ️ Помощь", "🏁 Начало"]],
-            resize_keyboard=True,
-        )
+        keyboard = [["🔄 Проверить статус", "🔁 Изменить номер", "ℹ️ Помощь", "🏁 Начало"]]
+
     else:
-        return ReplyKeyboardMarkup(
-            [["📋 Зарегистрироваться"], ["🔄 Проверить статус", "ℹ️ Помощь", "🏁 Начало"]],
-            resize_keyboard=True,
-        )
+        keyboard = [
+            ["📋 Зарегистрироваться"],
+            ["🔄 Проверить статус", "ℹ️ Помощь", "🏁 Начало"],
+        ]
+
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
 
 async def safe_reply(message, text, retries=3, delay=2, **kwargs):
@@ -482,9 +615,25 @@ async def open_gate(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not await is_gate_access_granted(user_id, update):
         return
+    else:
+        log(f"[🔓] Разрешённый доступ: user_id={user_id}, time OK")
 
-    if send_gate_command("OPEN", user_id, username):
-        await safe_reply(update.message, "🚪 Калитка открывается...")
+    # ⛔ Проверка: если уже другой активный пользователь
+    if not await is_gate_available_for_user(user_id, context):
+        await update.message.reply_text(
+            "🚫 Калитка сейчас используется другим пользователем."
+        )
+        return
+
+    # ✅ Теперь можем назначить активного
+    context.bot_data["last_active_user_id"] = user_id
+    print(f"[open_gate] Установлен active user: {user_id}")
+
+    send_gate_command("OPEN", user_id, username)
+    log(f"[🔓] Калитка открыта по запросу: user_id={user.id}, username={user.username}")
+
+    keyboard = get_main_menu("yes", get_dynamic_keyboard(context, update=update))
+    await update.message.reply_text("🔓 Калитка открывается", reply_markup=keyboard)
 
 
 async def notify_admin_about_request(
@@ -572,8 +721,17 @@ async def stop_gate(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_gate_access_granted(user_id, update):
         return
 
-    if send_gate_command("STOP", str(user.id), user.username or ""):
-        await safe_reply(update.message, "⏹ Калитка остановлена.")
+    if not await is_gate_available_for_user(user_id, context):
+        await update.message.reply_text(
+            "🚫 Калитка сейчас используется другим пользователем."
+        )
+        return
+
+    context.bot_data["last_active_user_id"] = user_id
+    send_gate_command("STOP", user_id, username)
+
+    keyboard = get_main_menu("yes", get_dynamic_keyboard(context, update=update))
+    await update.message.reply_text("⏹ Калитка останавливается", reply_markup=keyboard)
 
 
 async def close_gate(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -587,8 +745,19 @@ async def close_gate(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_gate_access_granted(user_id, update):
         return
 
-    if send_gate_command("CLOSE", user_id, username):
-        await safe_reply(update.message, "🔒 Калитка закрывается.")
+    if not await is_gate_available_for_user(user_id, context):
+        await update.message.reply_text(
+            "🚫 Калитка сейчас используется другим пользователем."
+        )
+        return
+
+    context.bot_data["last_active_user_id"] = user_id
+    send_gate_command("CLOSE", user_id, username)
+
+    keyboard = get_main_menu("yes", get_dynamic_keyboard(context, update=update))
+    await update.message.reply_text(
+        "🔒 Команда сейчас закрывается", reply_markup=keyboard
+    )
 
 
 async def is_gate_access_granted(user_id: str, update: Update) -> bool:
@@ -616,6 +785,7 @@ async def is_gate_access_granted(user_id: str, update: Update) -> bool:
 
 async def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
+    app.bot_data["event_loop"] = asyncio.get_event_loop()
 
     conv_handler = ConversationHandler(
         entry_points=[
@@ -653,6 +823,7 @@ async def main():
         PORT = int(os.getenv("PORT", 8443))
         webhook_url = f"https://{DOMAIN_IP}:{PORT}/bot{BOT_TOKEN}"
 
+        init_mqtt(app, app)
         await app.bot.set_webhook(webhook_url)
 
         await app.run_webhook(
@@ -665,6 +836,7 @@ async def main():
         )
     else:
         log("🚀 Запуск в polling режиме. Введите /start в Telegram.")
+        init_mqtt(app, app)
         await app.run_polling()
 
 
