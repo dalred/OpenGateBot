@@ -176,7 +176,7 @@ def on_mqtt_message(client, userdata, msg, properties=None):
 
             if user_id:
                 keyboard = get_main_menu(status="yes", dynamic_buttons=None)
-                text = "🔁"
+                text = "🔒"
             else:
                 return  # никому отправлять
         else:
@@ -643,7 +643,6 @@ async def open_gate(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     user_id = str(user.id)
     username = user.username or "unknown"
-    log(f"[🆗] Назначен активный пользователь: {user_id}")
 
     if await is_too_soon(update, context):
         return
@@ -666,6 +665,8 @@ async def open_gate(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     else:
         log(f"[🔓] Разрешённый доступ: user_id={user_id} time is OK")
+
+    log(f"[🆗] Назначен активный пользователь: {user_id}")
 
     # ⛔ Проверка: если уже другой активный пользователь
     if not await is_gate_available_for_user(user_id, context):
