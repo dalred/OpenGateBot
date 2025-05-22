@@ -32,7 +32,7 @@ from typing import Optional
 
 load_dotenv()
 moscow = pytz.timezone("Europe/Moscow")
-MIN_INTERVAL = timedelta(seconds=5)
+MIN_INTERVAL = timedelta(seconds=7)
 last_used_time = {}
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 SHEET_ID = os.getenv("SHEET_ID")
@@ -59,7 +59,7 @@ async def is_too_soon(update, context) -> bool:
 
     if last_used and now - last_used < MIN_INTERVAL:
         await update.message.reply_text(
-            f"⚠️ Подождите {MIN_INTERVAL.total_seconds():.0f} секунды перед повторной попыткой."
+            f"⚠️ Подождите {MIN_INTERVAL.total_seconds():.0f} секунд перед повторной попыткой."
         )
         user_id = update.effective_user.id
         log(f"❌ Повторное открытие пользователем: user_id={user_id}")
@@ -209,9 +209,9 @@ def on_mqtt_message(client, userdata, msg, properties=None):
 
 
 def init_mqtt(application, context):
+    context.bot_data["last_active_user_id"] = None
     client_id = f"client_{random.randint(1, 100000)}"
     client = mqtt.Client(client_id=client_id, protocol=mqtt.MQTTv5)
-
     client.username_pw_set(username=MQTT_USER, password=MQTT_PASS)
     client.user_data_set({"app": application, "context": context})
     client.on_message = on_mqtt_message
@@ -642,8 +642,8 @@ async def my_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def open_gate(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     user_id = str(user.id)
-    log(f"[🆗] Назначен активный пользователь: {user_id}")
     username = user.username or "unknown"
+    log(f"[🆗] Назначен активный пользователь: {user_id}")
 
     if await is_too_soon(update, context):
         return
@@ -678,13 +678,9 @@ async def open_gate(update: Update, context: ContextTypes.DEFAULT_TYPE):
     send_gate_command("OPEN", user_id, username)
     log(f"[🔓] Калитка открыта по запросу: user_id={user.id}, username={user.username}")
 
-    # 📲 Формируем клавиатуру
-    dynamic_buttons = get_dynamic_keyboard(context, user_id=user_id)
-    keyboard = get_main_menu("yes", dynamic_buttons)
-
+    # ⏳ Ответ пользователю (без клавиатуры)
     await update.message.reply_text(
-        "📤 Команда отправлена. Ожидаем подтверждение от калитки...",
-        reply_markup=keyboard,
+        "📤 Команда отправлена. Ожидаем подтверждение от калитки..."
     )
 
 
