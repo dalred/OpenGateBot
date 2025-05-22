@@ -162,7 +162,7 @@ def on_mqtt_message(client, userdata, msg, properties=None):
 
     dynamic_buttons = get_dynamic_keyboard(context, user_id=user_id)
     keyboard = get_main_menu(status="yes", dynamic_buttons=dynamic_buttons)
-
+    text = None
     # Определение текста по состоянию
     if payload == "OPENING":
         text = "🔓 Калитка начала открываться"
