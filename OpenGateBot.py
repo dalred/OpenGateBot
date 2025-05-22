@@ -238,7 +238,8 @@ def send_gate_command(command: str, user_id: str, username: str) -> bool:
         "command": command,
         "user_id": user_id,
         "username": username,
-        "timestamp": datetime.now(moscow).isoformat(),
+        "timestamp": datetime.now(timezone.utc).isoformat()
+        # "timestamp": datetime.now(moscow).isoformat(),
     }
 
     try:
@@ -679,7 +680,9 @@ async def open_gate(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # 📤 Отправляем команду
     send_gate_command("OPEN", user_id, username)
-    log(f"[🔓] Калитка открыта по запросу: user_id={user.id}, username={user.username}")
+    log(
+        f"[🔓] Попытка открытия калитки по запросу: user_id={user.id}, username={user.username}"
+    )
 
     # ⏳ Ответ пользователю (без клавиатуры)
     await update.message.reply_text(
