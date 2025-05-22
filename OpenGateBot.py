@@ -650,7 +650,7 @@ async def open_gate(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_gate_access_granted(user_id, update):
         return
     else:
-        log(f"[🔓] Разрешённый доступ: user_id={user_id}")
+        log(f"[🔓] Разрешённый доступ: user_id={user_id}, username={user.username}")
 
     access_time = get_access_time_for_user(user_id)
 
@@ -664,7 +664,9 @@ async def open_gate(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     else:
-        log(f"[🔓] Разрешённый доступ: user_id={user_id} time is OK")
+        log(
+            f"[🔓] Разрешённый доступ: user_id={user_id}, username={user.username} time is OK"
+        )
 
     log(f"[🆗] Назначен активный пользователь: {user_id}")
 
@@ -708,7 +710,9 @@ async def stop_gate(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     else:
-        log(f"[🔓] Разрешённый доступ: user_id={user_id} time is OK")
+        log(
+            f"[🔓] Разрешённый доступ: user_id={user_id}, username={user.username} time is OK"
+        )
 
     if not await is_gate_available_for_user(user_id, context):
         await update.message.reply_text(
@@ -750,7 +754,9 @@ async def close_gate(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     else:
-        log(f"[🔓] Разрешённый доступ: user_id={user_id} time is OK")
+        log(
+            f"[🔓] Разрешённый доступ: user_id={user_id}, username={user.username} time is OK"
+        )
 
     if not await is_gate_available_for_user(user_id, context):
         await update.message.reply_text(
