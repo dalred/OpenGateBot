@@ -630,6 +630,13 @@ async def open_gate(update: Update, context: ContextTypes.DEFAULT_TYPE):
         log(f"[🔓] Разрешённый доступ: user_id={user_id}")
 
     if not await check_access_time(user_id, update):
+        log(
+            f"[⏰] Попытка доступа к калитке вне времени: user_id={user_id},username={user.username} access_time={access_time}"
+        )
+        await safe_reply(
+            update.message,
+            "🕒 Доступ к калитке возможен только в разрешённое время.",
+        )
         return
     else:
         log(f"[🔓] Разрешённый доступ: user_id={user_id} time is OK")
@@ -667,6 +674,13 @@ async def stop_gate(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if not await check_access_time(user_id, update):
+        log(
+            f"[⏰] Попытка доступа к калитке вне времени: user_id={user_id},username={user.username} access_time={access_time}"
+        )
+        await safe_reply(
+            update.message,
+            "🕒 Доступ к калитке возможен только в разрешённое время.",
+        )
         return
     else:
         log(f"[🔓] Разрешённый доступ: user_id={user_id} time is OK")
@@ -700,6 +714,13 @@ async def close_gate(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if not await check_access_time(user_id, update):
+        log(
+            f"[⏰] Попытка доступа к калитке вне времени: user_id={user_id},username={user.username} access_time={access_time}"
+        )
+        await safe_reply(
+            update.message,
+            "🕒 Доступ к калитке возможен только в разрешённое время.",
+        )
         return
     else:
         log(f"[🔓] Разрешённый доступ: user_id={user_id} time is OK")
