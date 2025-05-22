@@ -70,7 +70,6 @@ async def is_too_soon(update, context) -> bool:
 
 
 gate_state = {"current": "IDLE"}
-active_users = {}
 
 
 async def is_gate_available_for_user(
@@ -126,71 +125,72 @@ def get_dynamic_keyboard(context, user_id=None):
 
 
 def on_mqtt_message(client, userdata, msg, properties=None):
-    payload = msg.payload.decode()
     app = userdata["app"]
     context = userdata["context"]
     loop = app.bot_data.get("event_loop")
 
-    user_id = context.bot_data.get("last_active_user_id")
+    try:
+        payload_raw = msg.payload.decode()
+        log(f"[MQTT] 📥 Получено сообщение: topic={msg.topic}, payload={payload_raw}")
 
-    # Отладка
-    # log(f"[MQTT] Активный пользователь: {user_id}")
-    # log(f"📥 MQTT получено: [{msg.topic}] {payload}")
-    # log(f"[MQTT] DEBUG FULL RAW: topic={msg.topic}, payload={payload}, mid={msg.mid}")
-    # log(f"[MQTT] msg.mid = {msg.mid}")
+        # Попытка распарсить JSON
+        try:
+            data = json.loads(payload_raw)
+            payload = data.get("command") or data.get("status") or payload_raw
+        except json.JSONDecodeError as e:
+            log(f"[❌] Ошибка при разборе JSON payload: {e}")
+            return
 
-    # Фильтрация
-    if msg.topic != "gate/status":
-        return
+        log(f"[MQTT] Состояние: {payload}")
 
-    if payload == "IDLE":
-        context.bot_data["last_active_user_id"] = None
-        log("[🔁] Сброс активного пользователя (IDLE)")
-        log("[🔁] Калитка перешла в режим ожидания (IDLE)")
+        user_id = data.get("user_id")
+        username = data.get("username")
+        if user_id:
+            log(f"[MQTT] Активный пользователь (из payload): {user_id}")
+        else:
+            log("[MQTT] Пользователь в payload не указан")
 
-    previous_state = gate_state.get("current")
+        # Обновление текущего состояния
+        gate_state["current"] = payload
 
-    if previous_state == payload:
-        log(f"[MQTT] 🔁 Повтор состояния: {payload} — пропускаем")
-        return
+        # Формируем клавиатуру
+        if payload == "IDLE":
+            context.bot_data["last_active_user_id"] = None
+            log("[🔁] Сброс активного пользователя (IDLE)")
+            log("[🔁] Калитка перешла в режим ожидания")
 
-    gate_state["current"] = payload
-    log(f"[MQTT] Калитка в состоянии: {payload}")
+            if user_id:
+                keyboard = get_main_menu(status="yes", dynamic_buttons=None)
+                text = "🔁"
+            else:
+                return  # никому отправлять
+        else:
+            # Обновляем last_active_user_id
+            if user_id:
+                context.bot_data["last_active_user_id"] = user_id
 
-    if not user_id:
-        return
+            dynamic_buttons = get_dynamic_keyboard(context, user_id=user_id)
+            keyboard = get_main_menu("yes", dynamic_buttons)
 
-    dynamic_buttons = get_dynamic_keyboard(context, user_id=user_id)
-    keyboard = get_main_menu(status="yes", dynamic_buttons=dynamic_buttons)
-    text = None
-    # Определение текста по состоянию
-    if payload == "OPENING":
-        text = "🔓 Калитка начала открываться"
-    elif payload == "CLOSING":
-        text = "🔒 Калитка начала закрываться"
-    elif payload == "STOPPED":
-        text = "⏹ Калитка остановлена"
-    # elif payload == "IDLE":
-    #     text = "🔁 Калитка перешла в режим ожидания"
-    # else:
-    #     text = f"📡 Калитка в состоянии: {payload}"
+            text = {
+                "OPENING": "🔓 Калитка начала открываться",
+                "CLOSING": "🔒 Калитка начала закрываться",
+                "STOPPED": "⏹ Калитка остановлена",
+            }.get(payload)
 
-    # Async отправка сообщения
-    if text:
+            if not text:
+                return  # ничего не отправлять
+
+        # Единый send_message
         future = asyncio.run_coroutine_threadsafe(
-            app.bot.send_message(
-                chat_id=user_id,
-                text=text,
-                reply_markup=keyboard,
-            ),
+            app.bot.send_message(chat_id=user_id, text=text, reply_markup=keyboard),
             loop,
         )
+        future.result(timeout=10)
+        log(f"[✅] Сообщение отправлено Telegram пользователю user_id={user_id}")
 
-        try:
-            future.result(timeout=10)
-            log(f"[✅] Сообщение отправлено Telegram пользователю {user_id}")
-        except Exception as e:
-            log(f"[❌] Ошибка при отправке сообщения: {e}")
+    except Exception as e:
+        log(f"[❌] Ошибка в on_mqtt_message: {e}")
 
 
 def init_mqtt(application, context):
@@ -370,6 +370,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     user_id = str(user.id)
     name = user.first_name or user.username or "пользователь"
+
+    log(f"[🔄] Пользователь активен (start): {user_id}")
 
     status = "none"
     sheet = get_sheet()
@@ -616,6 +618,7 @@ async def my_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def open_gate(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     user_id = str(user.id)
+    log(f"[🆗] Назначен активный пользователь: {user_id}")
     username = user.username or "unknown"
 
     if await is_too_soon(update, context):
@@ -632,10 +635,6 @@ async def open_gate(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "🚫 Калитка сейчас используется другим пользователем."
         )
         return
-
-    # ✅ Назначаем активного
-    context.bot_data["last_active_user_id"] = user_id
-    print(f"[open_gate] Установлен active user: {user_id}")
 
     # 📤 Отправляем команду
     send_gate_command("OPEN", user_id, username)
@@ -742,7 +741,6 @@ async def stop_gate(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    context.bot_data["last_active_user_id"] = user_id
     send_gate_command("STOP", user_id, username)
 
     dynamic_buttons = get_dynamic_keyboard(context, user_id=user_id)
@@ -771,7 +769,6 @@ async def close_gate(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    context.bot_data["last_active_user_id"] = user_id
     send_gate_command("CLOSE", user_id, username)
 
     dynamic_buttons = get_dynamic_keyboard(context, user_id=user_id)
