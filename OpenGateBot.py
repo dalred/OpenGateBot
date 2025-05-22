@@ -176,20 +176,21 @@ def on_mqtt_message(client, userdata, msg, properties=None):
     #     text = f"📡 Калитка в состоянии: {payload}"
 
     # Async отправка сообщения
-    future = asyncio.run_coroutine_threadsafe(
-        app.bot.send_message(
-            chat_id=user_id,
-            text=text,
-            reply_markup=keyboard,
-        ),
-        loop,
-    )
+    if text:
+        future = asyncio.run_coroutine_threadsafe(
+            app.bot.send_message(
+                chat_id=user_id,
+                text=text,
+                reply_markup=keyboard,
+            ),
+            loop,
+        )
 
-    try:
-        future.result(timeout=10)
-        log(f"[✅] Сообщение отправлено Telegram пользователю {user_id}")
-    except Exception as e:
-        log(f"[❌] Ошибка при отправке сообщения: {e}")
+        try:
+            future.result(timeout=10)
+            log(f"[✅] Сообщение отправлено Telegram пользователю {user_id}")
+        except Exception as e:
+            log(f"[❌] Ошибка при отправке сообщения: {e}")
 
 
 def init_mqtt(application, context):
