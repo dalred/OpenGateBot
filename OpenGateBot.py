@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from datetime import datetime, time as dtime
 from datetime import datetime
 from datetime import datetime, timedelta
-import traceback
+
 
 from dotenv import load_dotenv
 from telegram import Update, KeyboardButton, ReplyKeyboardMarkup
@@ -28,7 +28,7 @@ from oauth2client.service_account import ServiceAccountCredentials
 from telegram import InlineKeyboardMarkup, InlineKeyboardButton
 import paho.mqtt.publish as publish
 import paho.mqtt.client as mqtt
-
+from typing import Optional
 
 load_dotenv()
 moscow = pytz.timezone("Europe/Moscow")
@@ -81,6 +81,21 @@ async def is_gate_available_for_user(
     if last_user_id and last_user_id != user_id and state != "IDLE":
         return False  # Калитка занята другим
     return True  # Всё в порядке
+
+
+def safe_gspread_call(func, *args, retries=3, delay=2, **kwargs):
+    for attempt in range(1, retries + 1):
+        try:
+            return func(*args, **kwargs)
+        except Exception as e:
+            log(f"[⚠️] GSpread error ({attempt}/{retries}): {e}")
+            time.sleep(delay)
+    log(f"[❌] Не удалось выполнить {func.__name__} после {retries} попыток.")
+    return None
+
+
+def safe_get_all_records(sheet):
+    return safe_gspread_call(sheet.get_all_records) or []
 
 
 def on_disconnect(client, userdata, rc, properties):
@@ -241,6 +256,15 @@ def send_gate_command(command: str, user_id: str, username: str) -> bool:
     except Exception as e:
         print(f"[❌] MQTT ошибка: {e}")
         return False
+
+
+def get_access_time_for_user(user_id: str) -> Optional[str]:
+    sheet = get_sheet()
+    records = safe_get_all_records(sheet)
+    for row in records:
+        if str(row.get("user_id")) == user_id:
+            return str(row.get("access_time", "")).strip().lower() or None
+    return None  # не указан
 
 
 def check_access_time(access_time_str: str) -> bool:
@@ -629,7 +653,9 @@ async def open_gate(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         log(f"[🔓] Разрешённый доступ: user_id={user_id}")
 
-    if not await check_access_time(user_id, update):
+    access_time = get_access_time_for_user(user_id)
+
+    if not access_time or not check_access_time(access_time):
         log(
             f"[⏰] Попытка доступа к калитке вне времени: user_id={user_id},username={user.username} access_time={access_time}"
         )
@@ -673,7 +699,9 @@ async def stop_gate(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_gate_access_granted(user_id, update):
         return
 
-    if not await check_access_time(user_id, update):
+    access_time = get_access_time_for_user(user_id)
+
+    if not access_time or not check_access_time(access_time):
         log(
             f"[⏰] Попытка доступа к калитке вне времени: user_id={user_id},username={user.username} access_time={access_time}"
         )
@@ -713,7 +741,9 @@ async def close_gate(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_gate_access_granted(user_id, update):
         return
 
-    if not await check_access_time(user_id, update):
+    access_time = get_access_time_for_user(user_id)
+
+    if not access_time or not check_access_time(access_time):
         log(
             f"[⏰] Попытка доступа к калитке вне времени: user_id={user_id},username={user.username} access_time={access_time}"
         )
