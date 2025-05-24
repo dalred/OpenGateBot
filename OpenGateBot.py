@@ -187,11 +187,21 @@ def on_mqtt_message(client, userdata, msg, properties=None):
             log("[🔁] Сброс активного пользователя (IDLE)")
             log("[🔁] Калитка перешла в режим ожидания")
 
-            if user_id:
-                keyboard = get_main_menu(status="yes", dynamic_buttons=None)
-                text = "🔒"
-            else:
-                return  # никому отправлять
+            keyboard = get_main_menu(status="yes", dynamic_buttons=None)
+            text = "🔒"
+
+            future = asyncio.run_coroutine_threadsafe(
+                app.bot.send_message(
+                    chat_id=int(user_id),
+                    text=text,
+                    reply_markup=keyboard,
+                    disable_notification=True,  # 🔕 бесшумно
+                ),
+                loop,
+            )
+            future.result(timeout=10)
+            log(f"[✅] Замочек и меню отправлены для user_id={user_id}")
+            return
         else:
             # Обновляем last_active_user_id
             if user_id:
@@ -209,7 +219,6 @@ def on_mqtt_message(client, userdata, msg, properties=None):
             if not text:
                 return  # ничего не отправлять
 
-        # Единый send_message
         future = asyncio.run_coroutine_threadsafe(
             app.bot.send_message(chat_id=user_id, text=text, reply_markup=keyboard),
             loop,
