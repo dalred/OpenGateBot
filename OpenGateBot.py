@@ -32,7 +32,8 @@ from typing import Optional
 
 load_dotenv()
 moscow = pytz.timezone("Europe/Moscow")
-MIN_INTERVAL = timedelta(seconds=7)
+min_interval_seconds = int(os.getenv("MIN_INTERVAL_SECONDS", "7"))
+MIN_INTERVAL = timedelta(seconds=min_interval_seconds)
 last_used_time = {}
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 SHEET_ID = os.getenv("SHEET_ID")
