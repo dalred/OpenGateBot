@@ -123,9 +123,9 @@ def on_disconnect(client, userdata, rc, properties):
 def get_dynamic_keyboard(context, user_id=None):
     state = gate_state.get("current", "IDLE")
     last_user = context.bot_data.get("last_active_user_id")
-    log(
-        f"[📲] Кнопки запрошены: user_id={user_id}, state={state}, last_user={last_user}"
-    )
+    # log(
+    #     f"[📲] Кнопки запрошены: user_id={user_id}, state={state}, last_user={last_user}"
+    # )
 
     # Только активному пользователю отображаем динамическую клавиатуру
     if user_id != last_user:
@@ -171,7 +171,9 @@ def on_mqtt_message(client, userdata, msg, properties=None):
         user_id = data.get("user_id")
         username = data.get("username")
         if user_id:
-            log(f"[MQTT] Активный пользователь (из payload): {user_id}")
+            log(
+                f"[MQTT] Активный пользователь (из payload): {user_id}, username={user.username}"
+            )
         else:
             log("[MQTT] Пользователь в payload не указан")
 
@@ -357,7 +359,7 @@ def get_user_status(user_id: str) -> str:
     sheet = get_sheet()
     if not sheet:
         return "none"
-    records = sheet.get_all_records()
+    records = safe_get_all_records(sheet)
     for row in records:
         if str(row.get("user_id")) == user_id:
             return row.get("aprove", "").strip().lower() or "none"
@@ -411,7 +413,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     status = "none"
     sheet = get_sheet()
     if sheet:
-        records = sheet.get_all_records()
+        records = safe_get_all_records(sheet)
         for row in records:
             if str(row.get("user_id")) == user_id:
                 status = row.get("aprove", "").strip().lower()
@@ -492,7 +494,7 @@ async def ask_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ASK_PHONE
 
     phone = normalize_phone(phone)
-    records = sheet.get_all_records()
+    records = safe_get_all_records(sheet)
 
     # === Смена номера ===
     if context.user_data.get("change_mode"):
@@ -511,8 +513,8 @@ async def ask_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     )
                     return ConversationHandler.END
 
-                sheet.update_cell(i, 4, phone)
-                sheet.update_cell(i, 5, "pending")
+                safe_update_cell(sheet, i, 4, phone)
+                safe_update_cell(sheet, i, 5, "pending")
                 log(f"[🔁] {user_id} сменил номер на {phone}, статус сброшен")
                 status = get_user_status(user_id)
                 await safe_reply(
@@ -543,7 +545,8 @@ async def ask_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
     fio = context.user_data.get("fio", "")
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     telegram_link = f"https://t.me/{user.username}" if user.username else ""
-    sheet.append_row(
+    safe_append_row(
+        sheet,
         [
             user_id,
             user.username or "",
@@ -599,7 +602,7 @@ async def check_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await safe_reply(update.message, "❌ Ошибка подключения к таблице.")
         return
 
-    records = sheet.get_all_records()
+    records = safe_get_all_records(sheet)
     for row in records:
         if str(row.get("user_id")) == user_id:
             status = row.get("aprove", "").strip().lower()
@@ -679,7 +682,7 @@ async def open_gate(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"[🔓] Разрешённый доступ: user_id={user_id}, username={user.username} time is OK"
         )
 
-    log(f"[🆗] Назначен активный пользователь: {user_id}")
+    log(f"[🆗] Назначен активный пользователь: {user_id}, username={user.username}")
 
     # ⛔ Проверка: если уже другой активный пользователь
     if not await is_gate_available_for_user(user_id, context):
@@ -833,7 +836,7 @@ async def handle_admin_decision(update: Update, context: ContextTypes.DEFAULT_TY
         return
 
     action, user_id = data.split(":", 1)
-    records = sheet.get_all_records()
+    records = safe_get_all_records(sheet)
 
     for i, row in enumerate(records, start=2):
         if str(row.get("user_id")) == user_id:
@@ -868,7 +871,7 @@ async def is_gate_access_granted(user_id: str, update: Update) -> bool:
         await update.message.reply_text("❌ Ошибка доступа к таблице.")
         return False
 
-    records = sheet.get_all_records()
+    records = safe_get_all_records(sheet)
     for row in records:
         if str(row.get("user_id")) == user_id:
             status = row.get("aprove", "").strip().lower()
