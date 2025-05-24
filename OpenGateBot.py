@@ -98,6 +98,16 @@ def safe_get_all_records(sheet):
     return safe_gspread_call(sheet.get_all_records) or []
 
 
+def safe_update_cell(sheet, row, col, value):
+    return safe_gspread_call(sheet.update_cell, row, col, value)
+
+
+def safe_append_row(sheet, row_values, value_input_option="USER_ENTERED"):
+    return safe_gspread_call(
+        sheet.append_row, row_values, value_input_option=value_input_option
+    )
+
+
 def on_disconnect(client, userdata, rc, properties):
     if rc != 0:
         log(f"[⚠️] MQTT отключился неожиданно (rc={rc}) — пытаемся переподключиться...")
