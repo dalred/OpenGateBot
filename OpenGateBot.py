@@ -200,7 +200,7 @@ def on_mqtt_message(client, userdata, msg, properties=None):
                 loop,
             )
             future.result(timeout=10)
-            log(f"[✅] Замочек и меню отправлены для user_id={user_id}")
+            log(f"[✅] Замочек и меню отправлены для {user_id}, username={username}")
             return
         else:
             # Обновляем last_active_user_id
@@ -224,7 +224,9 @@ def on_mqtt_message(client, userdata, msg, properties=None):
             loop,
         )
         future.result(timeout=10)
-        log(f"[✅] Сообщение отправлено Telegram пользователю user_id={user_id}")
+        log(
+            f"[✅] Сообщение отправлено Telegram пользователю {user_id}, username={username}"
+        )
 
     except Exception as e:
         log(f"[❌] Ошибка в on_mqtt_message: {e}")
