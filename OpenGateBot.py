@@ -235,7 +235,11 @@ def on_mqtt_message(client, userdata, msg, properties=None):
 def init_mqtt(application, context):
     context.bot_data["last_active_user_id"] = None
     client_id = f"client_{random.randint(1, 100000)}"
-    client = mqtt.Client(client_id=client_id, protocol=mqtt.MQTTv5)
+    client = mqtt.Client(
+        client_id=client_id,
+        protocol=mqtt.MQTTv5,
+        callback_api_version=mqtt.CallbackAPIVersion.VERSION2,
+    )
     client.username_pw_set(username=MQTT_USER, password=MQTT_PASS)
     client.user_data_set({"app": application, "context": context})
     client.on_message = on_mqtt_message
