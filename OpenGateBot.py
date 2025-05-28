@@ -78,6 +78,7 @@ async def is_gate_available_for_user(
 ) -> bool:
     last_user_id = context.bot_data.get("last_active_user_id")
     state = gate_state.get("current", "IDLE")
+    log(f"[DEBUG] Текущее состояние калитки: {state}")
 
     if last_user_id and last_user_id != user_id and state != "IDLE":
         return False  # Калитка занята другим
@@ -122,11 +123,10 @@ def on_disconnect(client, userdata, rc, properties):
 
 
 def get_dynamic_keyboard(context, user_id=None):
+    user_id = str(user_id)
     state = gate_state.get("current", "IDLE")
-    last_user = context.bot_data.get("last_active_user_id")
-    # log(
-    #     f"[📲] Кнопки запрошены: user_id={user_id}, state={state}, last_user={last_user}"
-    # )
+    last_user = str(context.bot_data.get("last_active_user_id"))
+    log(f"[📲] Кнопки запрошены: user_id={user_id}, last_user={last_user}")
 
     # Только активному пользователю отображаем динамическую клавиатуру
     if user_id != last_user:
@@ -424,6 +424,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(user.id)
     name = user.first_name or user.username or "пользователь"
 
+    # ✅ Сброс состояния пользователя
+    context.user_data.clear()
+
     log(f"[🔄] Пользователь активен (start): {user_id}")
 
     status = "none"
@@ -440,6 +443,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"👋 Привет, {name}! Выберите действие:",
         reply_markup=get_main_menu(status),
     )
+    # log("📲 Старт: выход из ConversationHandler")
+    return ConversationHandler.END
+
+
+async def handle_start_button(update, context):
+    log("🏁 Кнопка 'Начало' нажата")
+    context.user_data.clear()
+    return await start(update, context)
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -450,9 +461,29 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def help_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    user_id = str(user.id) if user else None
+
+    if not user_id:
+        return
+
+    # Получаем текущий статус пользователя
+    status = get_user_status(user_id)
+
+    # Проверяем, активен ли пользователь по статусу И назначен ли он last_active
+    last_user = str(context.bot_data.get("last_active_user_id"))
+    is_active = status == "yes" and user_id == last_user
+
+    # Формируем клавиатуру
+    dynamic_buttons = (
+        get_dynamic_keyboard(context, user_id=user_id) if is_active else None
+    )
+    keyboard = get_main_menu(status=status, dynamic_buttons=dynamic_buttons)
+
     await safe_reply(
-        update.message,
+        update.message or update.callback_query.message,
         "ℹ️ По всем вопросам обращайтесь к администратору:\n@DanielPython",
+        reply_markup=keyboard,
     )
 
 
@@ -469,7 +500,7 @@ async def ask_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["fio"] = update.message.text.strip()
     button = KeyboardButton("📱 Отправить номер", request_contact=True)
     keyboard = ReplyKeyboardMarkup(
-        [[button]], resize_keyboard=True, one_time_keyboard=True
+        [[button], ["🏁 Начало"]], resize_keyboard=True, one_time_keyboard=True
     )
     await safe_reply(
         update.message, "Теперь отправьте номер телефона:", reply_markup=keyboard
@@ -481,7 +512,7 @@ async def change_phone_start(update: Update, context: ContextTypes.DEFAULT_TYPE)
     context.user_data["change_mode"] = True
     button = KeyboardButton("📱 Отправить новый номер", request_contact=True)
     keyboard = ReplyKeyboardMarkup(
-        [[button]], resize_keyboard=True, one_time_keyboard=True
+        [[button], ["🏁 Начало"]], resize_keyboard=True, one_time_keyboard=True
     )
     await safe_reply(update.message, "⬇️ Отправьте новый номер:", reply_markup=keyboard)
     return ASK_PHONE
@@ -914,13 +945,20 @@ async def main():
             MessageHandler(filters.Regex("🔁 Изменить номер"), change_phone_start),
         ],
         states={
-            ASK_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_name)],
+            ASK_NAME: [
+                MessageHandler(filters.Regex("^🏁 Начало$"), handle_start_button),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, ask_name),
+            ],
             ASK_PHONE: [
+                MessageHandler(filters.Regex("^🏁 Начало$"), handle_start_button),
                 MessageHandler(filters.CONTACT, ask_phone),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, ask_phone),
             ],
         },
-        fallbacks=[CommandHandler("cancel", cancel)],
+        fallbacks=[
+            MessageHandler(filters.Regex("^🏁 Начало$"), handle_start_button),
+            CommandHandler("cancel", cancel),
+        ],
     )
 
     app.add_handler(conv_handler)
