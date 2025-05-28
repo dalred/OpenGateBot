@@ -126,7 +126,7 @@ def get_dynamic_keyboard(context, user_id=None):
     user_id = str(user_id)
     state = gate_state.get("current", "IDLE")
     last_user = str(context.bot_data.get("last_active_user_id"))
-    log(f"[📲] Кнопки запрошены: user_id={user_id}, last_user={last_user}")
+    # log(f"[📲] Кнопки запрошены: user_id={user_id}, last_user={last_user}")
 
     # Только активному пользователю отображаем динамическую клавиатуру
     if user_id != last_user:
@@ -134,19 +134,19 @@ def get_dynamic_keyboard(context, user_id=None):
         return None
 
     if state == "IDLE":
-        log("[🎛️] Отдаем кнопку: 🚪 Открыть (IDLE)")
+        # log("[🎛️] Отдаем кнопку: 🚪 Открыть (IDLE)")
         return [["🚪 Открыть"]]
     elif state == "OPENING":
-        log("[🎛️] Отдаем кнопку: ⏹ Остановить")
+        # log("[🎛️] Отдаем кнопку: ⏹ Остановить")
         return [["⏹ Остановить"]]
     elif state == "STOPPED":
-        log("[🎛️] Отдаем кнопку: 🔒 Закрыть")
+        # log("[🎛️] Отдаем кнопку: 🔒 Закрыть")
         return [["🔒 Закрыть"]]
     elif state == "CLOSING":
-        log("[🎛️] Отдаем кнопку: ⏹ Остановить")
+        # log("[🎛️] Отдаем кнопку: ⏹ Остановить")
         return [["⏹ Остановить"]]
     else:
-        log("[🎛️] Неизвестное состояние — кнопки не отдаем")
+        # log("[🎛️] Неизвестное состояние — кнопки не отдаем")
         return None
 
 
@@ -448,7 +448,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def handle_start_button(update, context):
-    log("🏁 Кнопка 'Начало' нажата")
+    # log("🏁 Кнопка 'Начало' нажата")
     context.user_data.clear()
     return await start(update, context)
 
@@ -532,7 +532,7 @@ async def ask_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if contact and contact.phone_number:
         phone = contact.phone_number
-    elif text and re.fullmatch(r"\+?\d{10,15}", text.strip()):
+    elif text and re.fullmatch(r"(\+7|8)\d{10}", text.strip()):
         phone = text.strip()
     else:
         await safe_reply(
@@ -725,9 +725,7 @@ async def open_gate(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     else:
-        log(
-            f"[🔓] Разрешённый доступ: user_id={user_id}, username={user.username} time is OK"
-        )
+        log(f"[🔓] username={user.username} time is OK")
 
     log(f"[🆗] Назначен активный пользователь: {user_id}, username={user.username}")
 
@@ -773,9 +771,7 @@ async def stop_gate(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     else:
-        log(
-            f"[🔓] Разрешённый доступ: user_id={user_id}, username={user.username} time is OK"
-        )
+        log(f"[🔓] username={user.username} time is OK")
 
     if not await is_gate_available_for_user(user_id, context):
         await update.message.reply_text(
@@ -817,9 +813,7 @@ async def close_gate(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     else:
-        log(
-            f"[🔓] Разрешённый доступ: user_id={user_id}, username={user.username} time is OK"
-        )
+        log(f"[🔓] username={user.username} time is OK")
 
     if not await is_gate_available_for_user(user_id, context):
         await update.message.reply_text(
