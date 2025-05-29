@@ -535,7 +535,7 @@ async def help_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await safe_reply(
         update.message or update.callback_query.message,
-        "ℹ️По вопросам добавления к @SergeyIvanov1987\nПо всем техническим вопросам обращайтесь к администратору:\n@DanielPython",
+        "ℹ️По вопросам добавления обращайтесь к @SergeyIvanov1987\n🛠️ По всем техническим вопросам к @DanielPython",
         reply_markup=keyboard,
     )
 
