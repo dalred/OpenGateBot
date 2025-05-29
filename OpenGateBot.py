@@ -884,7 +884,7 @@ async def close_gate(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    timestamp_str = send_gate_command("STOP", user_id, username)
+    timestamp_str = send_gate_command("CLOSE", user_id, username)
     if not timestamp_str:
         await update.message.reply_text("❌ Ошибка отправки команды.")
         return
