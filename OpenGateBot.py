@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from datetime import datetime, time as dtime
 from datetime import datetime
 from datetime import datetime, timedelta
+from dateutil.parser import isoparse
 
 
 from dotenv import load_dotenv
@@ -33,6 +34,7 @@ from typing import Optional
 load_dotenv()
 moscow = pytz.timezone("Europe/Moscow")
 min_interval_seconds = int(os.getenv("MIN_INTERVAL_SECONDS", "7"))
+ARDUINO_CONFIRM_TIMEOUT = int(os.getenv("ARDUINO_CONFIRM_TIMEOUT", "10"))
 MIN_INTERVAL = timedelta(seconds=min_interval_seconds)
 last_used_time = {}
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -71,6 +73,49 @@ async def is_too_soon(update, context) -> bool:
 
 
 gate_state = {"current": "IDLE"}
+
+
+def process_gate_status(data, context):
+    try:
+        context.bot_data["last_gate_status"] = {
+            "status": data["status"],
+            "user_id": str(data["user_id"]),
+            "timestamp": isoparse(data["timestamp"]),
+        }
+        # log(f"[📥] Arduino status: {data['status']} от user_id={data['user_id']}")
+    except Exception as e:
+        log(f"[❌] Ошибка обработки status от Arduino: {e}")
+
+
+async def wait_for_arduino_confirmation(
+    context,
+    user_id: str,
+    update: Update,
+    command_name: str,
+    timeout: int = ARDUINO_CONFIRM_TIMEOUT,
+):
+    await update.message.reply_text(
+        f"📤 Команда отправлена. Ожидаем подтверждение от калитки...",
+        # f"📤 Команда {command_name} отправлена. Ожидаем подтверждение от калитки...",
+        disable_notification=True,  # 🔕 бесшумно
+    )
+
+    await asyncio.sleep(timeout)
+
+    last_status = context.bot_data.get("last_gate_status")
+    last_time = context.user_data.get("last_command_timestamp")
+
+    if (
+        not last_status
+        or last_status.get("user_id") != user_id
+        or last_status.get("timestamp") < last_time
+    ):
+        await update.message.reply_text(
+            "⚠️ Устройство не ответило. Возможно, оно недоступно.",
+            disable_notification=True,  # 🔕 бесшумно
+        )
+    # else:
+    # await update.message.reply_text("✅ Устройство подтвердило выполнение команды.")
 
 
 async def is_gate_available_for_user(
@@ -171,6 +216,9 @@ def on_mqtt_message(client, userdata, msg, properties=None):
 
         user_id = data.get("user_id")
         username = data.get("username")
+        if context and "status" in data and "timestamp" in data and user_id:
+            process_gate_status(data, context)
+
         if user_id:
             log(
                 f"[MQTT] Активный пользователь (из payload): {user_id}, username={username}"
@@ -220,7 +268,12 @@ def on_mqtt_message(client, userdata, msg, properties=None):
                 return  # ничего не отправлять
 
         future = asyncio.run_coroutine_threadsafe(
-            app.bot.send_message(chat_id=user_id, text=text, reply_markup=keyboard),
+            app.bot.send_message(
+                chat_id=user_id,
+                text=text,
+                reply_markup=keyboard,
+                disable_notification=True,
+            ),
             loop,
         )
         future.result(timeout=10)
@@ -243,7 +296,7 @@ def init_mqtt(application, context):
     client.username_pw_set(username=MQTT_USER, password=MQTT_PASS)
     client.user_data_set({"app": application, "context": context})
     client.on_message = on_mqtt_message
-    client.on_disconnect = on_disconnect  # ⬅️ ВЕШАЕМ после создания клиента
+    client.on_disconnect = on_disconnect
 
     try:
         client.connect(HOST, port=1883, keepalive=60)
@@ -257,7 +310,7 @@ def init_mqtt(application, context):
     client.loop_start()
 
 
-def send_gate_command(command: str, user_id: str, username: str) -> bool:
+def send_gate_command(command: str, user_id: str, username: str) -> Optional[str]:
     if not MQTT_USER or not MQTT_PASS:
         log("❌ MQTT переменные окружения не заданы.")
         return False
@@ -277,11 +330,11 @@ def send_gate_command(command: str, user_id: str, username: str) -> bool:
             hostname=HOST,
             port=1883,
             auth={"username": MQTT_USER, "password": MQTT_PASS},
-            qos=0,
-            retain=False,
+            qos=0,  # “Fire and forget” Не получит и не восстановится
+            retain=False,  # Не сохранит последнее сообщение по теме не передаёт его после переподключения
         )
         log(f"[📤] MQTT: отправлено {payload}")
-        return True
+        return payload["timestamp"]
     except Exception as e:
         print(f"[❌] MQTT ошибка: {e}")
         return False
@@ -737,15 +790,23 @@ async def open_gate(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # 📤 Отправляем команду
-    send_gate_command("OPEN", user_id, username)
+
+    timestamp_str = send_gate_command("OPEN", user_id, username)
+    if not timestamp_str:
+        await update.message.reply_text("❌ Ошибка отправки команды.")
+        return
+    context.user_data["last_command_timestamp"] = isoparse(timestamp_str)
+    await wait_for_arduino_confirmation(
+        context=context, user_id=user_id, update=update, command_name="OPEN"
+    )
     log(
         f"[🔓] Попытка открытия калитки по запросу: user_id={user.id}, username={user.username}"
     )
 
     # ⏳ Ответ пользователю (без клавиатуры)
-    await update.message.reply_text(
-        "📤 Команда отправлена. Ожидаем подтверждение от калитки..."
-    )
+    # await update.message.reply_text(
+    #     "📤 Команда отправлена. Ожидаем подтверждение от калитки..."
+    # )
 
 
 async def stop_gate(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -779,15 +840,17 @@ async def stop_gate(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    send_gate_command("STOP", user_id, username)
+    timestamp_str = send_gate_command("STOP", user_id, username)
+    if not timestamp_str:
+        await update.message.reply_text("❌ Ошибка отправки команды.")
+        return
+    context.user_data["last_command_timestamp"] = isoparse(timestamp_str)
+    await wait_for_arduino_confirmation(
+        context=context, user_id=user_id, update=update, command_name="STOP"
+    )
 
     dynamic_buttons = get_dynamic_keyboard(context, user_id=user_id)
     keyboard = get_main_menu("yes", dynamic_buttons)
-
-    await update.message.reply_text(
-        "📤 Команда отправлена. Ожидаем подтверждение от калитки...",
-        reply_markup=keyboard,
-    )
 
 
 async def close_gate(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -821,15 +884,17 @@ async def close_gate(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    send_gate_command("CLOSE", user_id, username)
+    timestamp_str = send_gate_command("STOP", user_id, username)
+    if not timestamp_str:
+        await update.message.reply_text("❌ Ошибка отправки команды.")
+        return
+    context.user_data["last_command_timestamp"] = isoparse(timestamp_str)
+    await wait_for_arduino_confirmation(
+        context=context, user_id=user_id, update=update, command_name="STOP"
+    )
 
     dynamic_buttons = get_dynamic_keyboard(context, user_id=user_id)
     keyboard = get_main_menu("yes", dynamic_buttons)
-
-    await update.message.reply_text(
-        "📤 Команда отправлена. Ожидаем подтверждение от калитки...",
-        reply_markup=keyboard,
-    )
 
 
 async def notify_admin_about_request(
