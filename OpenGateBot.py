@@ -45,7 +45,7 @@ MQTT_PASS = os.getenv("password_mosquitto")
 HOST = os.getenv("HOST")
 DOMAIN_IP = os.getenv("DOMAIN_IP")
 MODE = os.getenv("MODE")
-
+DELTA_SECONDS = 5
 
 ASK_NAME, ASK_PHONE = range(2)
 
@@ -95,27 +95,56 @@ async def wait_for_arduino_confirmation(
     timeout: int = ARDUINO_CONFIRM_TIMEOUT,
 ):
     await update.message.reply_text(
-        f"📤 Команда отправлена. Ожидаем подтверждение от калитки...",
-        # f"📤 Команда {command_name} отправлена. Ожидаем подтверждение от калитки...",
-        disable_notification=True,  # 🔕 бесшумно
+        "📤 Команда отправлена. Ожидаем подтверждение от калитки...",
+        disable_notification=True,
     )
 
-    await asyncio.sleep(timeout)
+    # Создаём событие ожидания подтверждения
+    event = asyncio.Event()
+    context.bot_data["confirm_event"] = event
+    context.bot_data["last_command_user"] = user_id
+
+    try:
+        # Ожидаем, пока событие не будет установлено MQTT-обработчиком
+        await asyncio.wait_for(event.wait(), timeout=timeout)
+    except asyncio.TimeoutError:
+        log(f"Устройство не ответило вовремя.")
+        await update.message.reply_text(
+            "⚠️ Устройство не ответило вовремя.",
+            disable_notification=True,
+        )
+        return
 
     last_status = context.bot_data.get("last_gate_status")
     last_time = context.user_data.get("last_command_timestamp")
 
-    if (
-        not last_status
-        or last_status.get("user_id") != user_id
-        or last_status.get("timestamp") < last_time
-    ):
+    # log(f"last_status:{last_status}, last_time:{last_time}")
+
+    if not last_status:
         await update.message.reply_text(
             "⚠️ Устройство не ответило. Возможно, оно недоступно.",
-            disable_notification=True,  # 🔕 бесшумно
+            disable_notification=True,
         )
-    # else:
-    # await update.message.reply_text("✅ Устройство подтвердило выполнение команды.")
+        return
+
+    status_user_id = last_status.get("user_id")
+    status_timestamp = last_status.get("timestamp")
+
+    # Вычисляем разницу во времени
+    delta = (status_timestamp - last_time).total_seconds()
+    log(f"[DEBUG] Разница времени: {delta:.2f} сек")
+
+    if status_user_id != user_id or status_timestamp < last_time or delta > timeout + 3:
+        await update.message.reply_text(
+            "⚠️ Устройство не подтвердило команду в пределах времени.",
+            disable_notification=True,
+        )
+    else:
+        log(f"[✅] Устройство подтвердило команду '{command_name}' от {user_id}")
+        # await update.message.reply_text(
+        #     "✅ Устройство подтвердило выполнение команды.",
+        #     disable_notification=True,
+        # )
 
 
 async def is_gate_available_for_user(
@@ -218,6 +247,20 @@ def on_mqtt_message(client, userdata, msg, properties=None):
         username = data.get("username")
         if context and "status" in data and "timestamp" in data and user_id:
             process_gate_status(data, context)
+            event = context.bot_data.get("confirm_event")
+            expected_user = context.bot_data.get("last_command_user")
+
+            if (
+                event
+                and not event.is_set()
+                and str(data.get("user_id")) == str(expected_user)
+            ):
+                context.bot_data["last_gate_status"] = {
+                    "status": data["status"],
+                    "user_id": str(data["user_id"]),
+                    "timestamp": isoparse(data["timestamp"]),
+                }
+                event.set()
 
         if user_id:
             log(
@@ -272,7 +315,7 @@ def on_mqtt_message(client, userdata, msg, properties=None):
                 chat_id=user_id,
                 text=text,
                 reply_markup=keyboard,
-                disable_notification=True,
+                disable_notification=False,
             ),
             loop,
         )
@@ -535,7 +578,7 @@ async def help_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await safe_reply(
         update.message or update.callback_query.message,
-        "ℹ️По вопросам добавления обращайтесь к @SergeyIvanov1987\n🛠️ По всем техническим вопросам к @DanielPython",
+        "ℹ️ По всем вопросам обращайтесь к администратору:\n@DanielPython",
         reply_markup=keyboard,
     )
 
@@ -757,6 +800,8 @@ async def open_gate(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     user_id = str(user.id)
     username = user.username or "unknown"
+
+    log(f"open_gate нажат")
 
     if await is_too_soon(update, context):
         return
