@@ -9,7 +9,14 @@ from datetime import datetime, time as dtime
 from datetime import datetime
 from datetime import datetime, timedelta
 from dateutil.parser import isoparse
-
+from access_db import (
+    get_access_time_for_user,
+    get_user_aprove_status,
+    update_user_phone,
+    insert_new_user,
+    get_user_record,
+    set_user_approval_status,
+)
 
 from dotenv import load_dotenv
 from telegram import Update, KeyboardButton, ReplyKeyboardMarkup
@@ -24,8 +31,7 @@ from telegram.ext import (
 )
 from telegram import ReplyKeyboardRemove
 from telegram.error import NetworkError
-import gspread
-from oauth2client.service_account import ServiceAccountCredentials
+
 from telegram import InlineKeyboardMarkup, InlineKeyboardButton
 import paho.mqtt.publish as publish
 import paho.mqtt.client as mqtt
@@ -45,7 +51,7 @@ MQTT_PASS = os.getenv("password_mosquitto")
 HOST = os.getenv("HOST")
 DOMAIN_IP = os.getenv("DOMAIN_IP")
 MODE = os.getenv("MODE")
-DELTA_SECONDS = 5
+
 
 ASK_NAME, ASK_PHONE = range(2)
 
@@ -157,31 +163,6 @@ async def is_gate_available_for_user(
     if last_user_id and last_user_id != user_id and state != "IDLE":
         return False  # Калитка занята другим
     return True  # Всё в порядке
-
-
-def safe_gspread_call(func, *args, retries=3, delay=2, **kwargs):
-    for attempt in range(1, retries + 1):
-        try:
-            return func(*args, **kwargs)
-        except Exception as e:
-            log(f"[⚠️] GSpread error ({attempt}/{retries}): {e}")
-            time.sleep(delay)
-    log(f"[❌] Не удалось выполнить {func.__name__} после {retries} попыток.")
-    return None
-
-
-def safe_get_all_records(sheet):
-    return safe_gspread_call(sheet.get_all_records) or []
-
-
-def safe_update_cell(sheet, row, col, value):
-    return safe_gspread_call(sheet.update_cell, row, col, value)
-
-
-def safe_append_row(sheet, row_values, value_input_option="USER_ENTERED"):
-    return safe_gspread_call(
-        sheet.append_row, row_values, value_input_option=value_input_option
-    )
 
 
 def on_disconnect(client, userdata, rc, properties):
@@ -383,15 +364,6 @@ def send_gate_command(command: str, user_id: str, username: str) -> Optional[str
         return False
 
 
-def get_access_time_for_user(user_id: str) -> Optional[str]:
-    sheet = get_sheet()
-    records = safe_get_all_records(sheet)
-    for row in records:
-        if str(row.get("user_id")) == user_id:
-            return str(row.get("access_time", "")).strip().lower() or None
-    return None  # не указан
-
-
 def check_access_time(access_time_str: str) -> bool:
     tz = pytz.timezone("Europe/Moscow")
     now = datetime.now(tz)
@@ -449,33 +421,8 @@ def normalize_phone(phone):
     return re.sub(r"\D", "", str(phone))[-10:] if phone else ""
 
 
-def get_sheet(retries=3, delay=2):
-    scope = [
-        "https://spreadsheets.google.com/feeds",
-        "https://www.googleapis.com/auth/drive",
-    ]
-    for attempt in range(1, retries + 1):
-        try:
-            creds = ServiceAccountCredentials.from_json_keyfile_name(
-                GOOGLE_CREDENTIALS_FILE, scope
-            )
-            client = gspread.authorize(creds)
-            return client.open_by_key(SHEET_ID).worksheet("AccessList")
-        except Exception as e:
-            log(f"[⚠️] Google Sheets error ({attempt}/{retries}): {e}")
-            time.sleep(delay)
-    return None
-
-
 def get_user_status(user_id: str) -> str:
-    sheet = get_sheet()
-    if not sheet:
-        return "none"
-    records = safe_get_all_records(sheet)
-    for row in records:
-        if str(row.get("user_id")) == user_id:
-            return row.get("aprove", "").strip().lower() or "none"
-    return "none"
+    return get_user_aprove_status(user_id) or "none"
 
 
 def get_main_menu(status: str = "none", dynamic_buttons=None):
@@ -525,19 +472,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     log(f"[🔄] Пользователь активен (start): {user_id}")
 
-    status = "none"
-    sheet = get_sheet()
-    if sheet:
-        records = safe_get_all_records(sheet)
-        for row in records:
-            if str(row.get("user_id")) == user_id:
-                status = row.get("aprove", "").strip().lower()
-                break
+    status = get_user_aprove_status(user_id) or "none"
+    context.user_data["access_status"] = status
 
-    await safe_reply(
-        update.message,
-        f"👋 Привет, {name}! Выберите действие:",
-        reply_markup=get_main_menu(status),
+    await update.message.reply_text(
+        f"👋 Привет, {user.first_name or username}!", reply_markup=get_main_menu(status)
     )
     # log("📲 Старт: выход из ConversationHandler")
     return ConversationHandler.END
@@ -578,7 +517,7 @@ async def help_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await safe_reply(
         update.message or update.callback_query.message,
-        "ℹ️ По всем вопросам обращайтесь к администратору:\n@DanielPython",
+        "ℹ️По вопросам добавления обращайтесь к @SergeyIvanov1987\n🛠️ По всем техническим вопросам к @DanielPython",
         reply_markup=keyboard,
     )
 
@@ -616,14 +555,10 @@ async def change_phone_start(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 async def ask_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    sheet = get_sheet()
-    if not sheet:
-        await safe_reply(update.message, "❌ Ошибка доступа к таблице.")
-        return ConversationHandler.END
-
     contact = update.message.contact
     text = update.message.text
     user_id = str(user.id)
+    username = user.username or ""
     phone = None
 
     if contact and contact.phone_number:
@@ -637,73 +572,65 @@ async def ask_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ASK_PHONE
 
     phone = normalize_phone(phone)
-    records = safe_get_all_records(sheet)
 
     # === Смена номера ===
     if context.user_data.get("change_mode"):
-        for i, row in enumerate(records, start=2):
-            if str(row.get("user_id")) == user_id:
-                old_phone = normalize_phone(row.get("phone", ""))
-                if phone == old_phone:
-                    log(
-                        f"[🔁] {user_id} отправил тот же номер ({phone}), статус не изменён"
-                    )
-                    status = get_user_status(user_id)
-                    await safe_reply(
-                        update.message,
-                        "ℹ️ Вы отправили тот же номер. Изменений не внесено.",
-                        reply_markup=get_main_menu(status),
-                    )
-                    return ConversationHandler.END
-
-                safe_update_cell(sheet, i, 4, phone)
-                safe_update_cell(sheet, i, 5, "pending")
-                log(f"[🔁] {user_id} сменил номер на {phone}, статус сброшен")
-                status = get_user_status(user_id)
-                await safe_reply(
-                    update.message,
-                    "✅ Номер успешно обновлён! Заявка отправлена повторно, ожидайте одобрения.",
-                    reply_markup=get_main_menu(status),
-                )
-                return ConversationHandler.END
-
-        await safe_reply(
-            update.message, "⚠️ Не удалось найти вашу заявку для обновления."
-        )
-        return ConversationHandler.END
-
-    # === Регистрация (если не найден user_id) ===
-    for row in records:
-        if str(row.get("user_id")) == user_id:
-            log(
-                f"[ℹ️] Повторная попытка — уже зарегистрирован: {user_id}, phone: {phone}"
-            )
+        result = update_user_phone(user_id, phone)
+        if result == "same":
+            log(f"[🔁] {user_id} отправил тот же номер ({phone}), статус не изменён")
+            status = get_user_aprove_status(user_id)
             await safe_reply(
                 update.message,
-                "✅ Вы уже зарегистрированы.",
-                reply_markup=get_main_menu(),
+                "ℹ️ Вы отправили тот же номер. Изменений не внесено.",
+                reply_markup=get_main_menu(status),
             )
             return ConversationHandler.END
 
+        elif result == "updated":
+            log(f"[🔁] {user_id} сменил номер на {phone}, статус сброшен")
+            status = get_user_aprove_status(user_id)
+            await safe_reply(
+                update.message,
+                "✅ Номер успешно обновлён! Заявка отправлена повторно, ожидайте одобрения.",
+                reply_markup=get_main_menu(status),
+            )
+            return ConversationHandler.END
+
+        else:
+            await safe_reply(
+                update.message, "⚠️ Не удалось найти вашу заявку для обновления."
+            )
+            return ConversationHandler.END
+
+    # === Новая регистрация ===
+    status = get_user_aprove_status(user_id)
+    if status:
+        log(f"[ℹ️] Повторная попытка — уже зарегистрирован: {user_id}, phone: {phone}")
+        await safe_reply(
+            update.message,
+            "✅ Вы уже зарегистрированы.",
+            reply_markup=get_main_menu(status),
+        )
+        return ConversationHandler.END
+
     fio = context.user_data.get("fio", "")
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    telegram_link = f"https://t.me/{user.username}" if user.username else ""
-    safe_append_row(
-        sheet,
-        [
-            user_id,
-            user.username or "",
-            fio,
-            phone,
-            "pending",
-            "sat 08:00-19:00",
-            timestamp,
-            telegram_link,
-        ],
-        value_input_option="USER_ENTERED",
+    telegram_link = f"https://t.me/{username}" if username else ""
+
+    insert_new_user(
+        user_id=user_id,
+        username=username,
+        fio=fio,
+        phone=phone,
+        aprove="pending",
+        access_time="always",
+        updated_at=timestamp,
+        telegram_link=telegram_link,
     )
+
     log(f"[📋] Новая заявка от {user_id}: {fio}, {phone}")
     context.user_data["is_registering"] = False
+
     # 👇 Отправка админу
     admin_chat_id = int(os.getenv("ADMIN_CHAT_ID"))
     keyboard = InlineKeyboardMarkup(
@@ -722,7 +649,7 @@ async def ask_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
         chat_id=admin_chat_id,
         text=(
             f"👤 Пользователь *{fio}* (`{user_id}`) просит доступ\n"
-            f"🔗 [Профиль](https://t.me/{user.username})"
+            f"🔗 [Профиль](https://t.me/{username})"
         ),
         reply_markup=keyboard,
         parse_mode="Markdown",
@@ -738,46 +665,40 @@ async def ask_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def check_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = str(update.effective_user.id)
-    user_name = str(update.effective_user.username)
-    sheet = get_sheet()
-    if not sheet:
-        await safe_reply(update.message, "❌ Ошибка подключения к таблице.")
-        return
+    user = update.effective_user
+    user_id = str(user.id)
+    username = user.username or "unknown"
 
-    records = safe_get_all_records(sheet)
-    for row in records:
-        if str(row.get("user_id")) == user_id:
-            status = row.get("aprove", "").strip().lower()
-            if status == "yes":
-                log(
-                    f"[✅] Доступ разрешён — user_id: {user_id}, phone: {row.get('phone', '')}"
-                )
-                await safe_reply(
-                    update.message,
-                    "✅ Ваша заявка одобрена. Доступ разрешён.",
-                    reply_markup=get_main_menu("yes"),
-                )
-            elif status == "no":
-                log(
-                    f"[❌] Отклонено — user_id: {user_id}, phone: {row.get('phone', '')}, username: {row.get('username', '')}"
-                )
-                await safe_reply(
-                    update.message,
-                    "❌ Ваша заявка была отклонена.\nВы можете отправить номер заново или обратиться к администратору: @DanielPython",
-                    reply_markup=get_main_menu("no"),
-                )
-            else:  # pending
-                log(f"[⏳] Заявка рассматривается — user_id: {user_id}")
-                await safe_reply(
-                    update.message,
-                    "⏳ Заявка ещё рассматривается.",
-                    reply_markup=get_main_menu("pending"),
-                )
-            return
+    status = get_user_aprove_status(user_id)
 
-    log(f"ℹ️ user_id={user_id}, {user_name} Вы ещё не подавали заявку.")
-    await safe_reply(update.message, "ℹ️ Вы ещё не подавали заявку.")
+    if status == "yes":
+        log(f"[✅] Доступ разрешён — user_id: {user_id}")
+        await safe_reply(
+            update.message,
+            "✅ Ваша заявка одобрена. Доступ разрешён.",
+            reply_markup=get_main_menu("yes"),
+        )
+    elif status == "no":
+        log(f"[❌] Отклонено — user_id: {user_id}, username: {username}")
+        await safe_reply(
+            update.message,
+            "❌ Ваша заявка была отклонена.\n"
+            "Вы можете отправить номер заново или обратиться к администратору: @DanielPython",
+            reply_markup=get_main_menu("no"),
+        )
+    elif status == "" or status == "pending":
+        log(f"[⏳] Заявка рассматривается — user_id: {user_id}")
+        await safe_reply(
+            update.message,
+            "⏳ Заявка ещё рассматривается.",
+            reply_markup=get_main_menu("pending"),
+        )
+    else:
+        log(f"ℹ️ user_id={user_id}, {username} Вы ещё не подавали заявку.")
+        await safe_reply(
+            update.message,
+            "ℹ️ Вы ещё не подавали заявку.",
+        )
 
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -801,7 +722,7 @@ async def open_gate(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(user.id)
     username = user.username or "unknown"
 
-    log(f"open_gate нажат")
+    # log(f"open_gate нажат")
 
     if await is_too_soon(update, context):
         return
@@ -977,66 +898,70 @@ async def handle_admin_decision(update: Update, context: ContextTypes.DEFAULT_TY
     await query.answer()
 
     data = query.data
-    sheet = get_sheet()
-    if not sheet:
-        await query.edit_message_text("❌ Ошибка доступа к таблице.")
-        return
-
     if ":" not in data:
         await query.edit_message_text("ℹ️ Решение отложено.")
         return
 
     action, user_id = data.split(":", 1)
-    records = safe_get_all_records(sheet)
+    row = get_user_record(user_id)
 
-    for i, row in enumerate(records, start=2):
-        if str(row.get("user_id")) == user_id:
-            fio = row.get("fio", "Неизвестно")
-            username = row.get("username", "")
-            mention = f"@{username}" if username else f"user_id={user_id}"
+    if not row:
+        await query.edit_message_text("⚠️ Пользователь не найден в базе.")
+        return
 
-            if action == "approve":
-                safe_update_cell(sheet, i, 5, "yes")
-                log(f"[✅] Пользователь одобрен — {fio} ({mention})")
-                await query.edit_message_text(
-                    f"✅ Пользователь {fio} ({mention}) одобрен."
-                )
-                await context.bot.send_message(
-                    chat_id=int(user_id),
-                    text="✅ Ваша заявка одобрена! Доступ открыт. Добро пожаловать!",
-                    reply_markup=get_main_menu("yes"),
-                )
-            elif action == "reject":
-                safe_update_cell(sheet, i, 5, "no")
-                log(f"[❌] Пользователь отклонён — {fio} ({mention})")
-                await query.edit_message_text(
-                    f"❌ Пользователь {fio} ({mention}) отклонён."
-                )
-            return
-    await query.edit_message_text("⚠️ Пользователь не найден в таблице.")
+    fio = row.get("fio", "Неизвестно")
+    username = row.get("username", "")
+    mention = f"@{username}" if username else f"user_id={user_id}"
+
+    if action == "approve":
+        if set_user_approval_status(user_id, "yes"):
+            log(f"[✅] Пользователь одобрен — {fio} ({mention})")
+            await query.edit_message_text(f"✅ Пользователь {fio} ({mention}) одобрен.")
+            await context.bot.send_message(
+                chat_id=int(user_id),
+                text="✅ Ваша заявка одобрена! Доступ открыт. Добро пожаловать!",
+                reply_markup=get_main_menu("yes"),
+            )
+        else:
+            await query.edit_message_text("❌ Ошибка при сохранении в базе.")
+    elif action == "reject":
+        if set_user_approval_status(user_id, "no"):
+            log(f"[❌] Пользователь отклонён — {fio} ({mention})")
+            await query.edit_message_text(f"❌ Пользователь {fio} ({mention}) отклонён.")
+        else:
+            await query.edit_message_text("❌ Ошибка при сохранении в базе.")
+    else:
+        await query.edit_message_text("ℹ️ Неизвестное действие.")
 
 
 async def is_gate_access_granted(user_id: str, update: Update) -> bool:
-    sheet = get_sheet()
-    if not sheet:
-        await update.message.reply_text("❌ Ошибка доступа к таблице.")
+    # 1. Получаем статус approve (yes / no / "" / None)
+    status = get_user_aprove_status(user_id)
+
+    if status is None:
+        await update.message.reply_text("🚫 Вы не зарегистрированы.")
         return False
 
-    records = safe_get_all_records(sheet)
-    for row in records:
-        if str(row.get("user_id")) == user_id:
-            status = row.get("aprove", "").strip().lower()
-            if status == "yes":
-                return True
-            elif status == "no":
-                await update.message.reply_text("🚫 Ваш доступ был отклонён.")
-                return False
-            else:
-                await update.message.reply_text("⏳ Ваша заявка ещё рассматривается.")
-                return False
+    if status == "no":
+        await update.message.reply_text("🚫 Ваш доступ был отклонён.")
+        return False
 
-    await update.message.reply_text("🚫 Вы не зарегистрированы.")
-    return False
+    if status not in ("yes", ""):
+        await update.message.reply_text("⏳ Ваша заявка ещё рассматривается.")
+        return False
+
+    # 2. Если статус "yes" — проверяем access_time
+    access_time_str = get_access_time_for_user(user_id)
+
+    if access_time_str is None:
+        # Если поле пустое — считаем, что доступ разрешён всегда
+        return True
+
+    if check_access_time(access_time_str):
+        return True
+    else:
+        await update.message.reply_text("⏱ Сейчас вход запрещён по расписанию.")
+        return False
 
 
 async def main():
