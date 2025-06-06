@@ -111,16 +111,18 @@ async def handle_gate_command(
             await update.message.reply_text("🕒 Время доступа истекло.")
             return
 
-        if not await is_gate_available_for_user(user_id, context):
-            await update.message.reply_text("🚫 Калитка занята другим пользователем.")
-            return
-
         async with active_user_lock:
+            current_active = context.bot_data.get("active_user_id")
+            if current_active and current_active != user_id:
+                await update.message.reply_text(
+                    "🚫 Калитка занята другим пользователем."
+                )
+                log(f"[BLOCKED] {user_id=} отклонён: уже активен {current_active}")
+                return
+
             context.bot_data["active_user_id"] = user_id
             context.bot_data["active_user_since"] = datetime.now()
-            log(
-                f"[🆗] Назначен активный пользователь: {user_id}, username={user.username}"
-            )
+            log(f"[🆗] Назначен активный пользователь: {user_id}, username={username}")
 
         timestamp_str = send_gate_command(command, user_id, username)
         if not timestamp_str:
@@ -250,20 +252,6 @@ async def wait_for_arduino_confirmation(
         return False
 
     log(f"[✅] Arduino подтвердило команду '{command_name}' от {user_id}")
-    return True
-
-
-async def is_gate_available_for_user(
-    user_id: str, context: ContextTypes.DEFAULT_TYPE
-) -> bool:
-    active_user = context.bot_data.get("active_user_id")
-    state = gate_state.get("current", "IDLE")
-    log(f"[DEBUG] Текущее состояние калитки: {state}")
-    log(f"[DEBUG] Активный пользователь: {active_user}")
-
-    if active_user and active_user != user_id and state != "IDLE":
-        log(f"[BLOCKED] {user_id=} отклонён: уже активен {active_user}")
-        return False
     return True
 
 
