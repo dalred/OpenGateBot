@@ -202,9 +202,9 @@ async def send_and_confirm_command(
 
 
 async def wait_for_arduino_confirmation(
-    context: ContextTypes.DEFAULT_TYPE,
+    context,
     user_id: str,
-    update: Update,
+    update,
     command_name: str,
     timeout: int = ARDUINO_CONFIRM_TIMEOUT,
 ) -> bool:
@@ -212,47 +212,37 @@ async def wait_for_arduino_confirmation(
         "📤 Команда отправлена. Ожидаем подтверждение от калитки...",
         disable_notification=True,
     )
-
     # Создаём событие для ожидания
     event = asyncio.Event()
     context.bot_data["confirm_event"] = event
-    context.bot_data["last_command_user"] = user_id
+    context.bot_data["last_command_user"] = str(user_id)
 
     try:
         await asyncio.wait_for(event.wait(), timeout=timeout)
+        log(f"[✅] Arduino подтвердила команду '{command_name}' от user_id={user_id}")
+        return True
+
     except asyncio.TimeoutError:
-        log("⚠️ Устройство не ответило вовремя.")
-        await update.message.reply_text(
-            "⚠️ Устройство не ответило вовремя.",
-            disable_notification=True,
-        )
+        log(f"[⚠️] Таймаут ожидания ответа от Arduino на '{command_name}'")
+
+        # 🧹 Сброс состояния
+        context.bot_data["active_user_id"] = None
+        gate_state["current"] = "IDLE"
+        log(f"[🧹] Активный пользователь {user_id} сброшен, состояние → IDLE")
+
+        # ♻️ Обновление UI
+        dynamic_buttons = get_dynamic_keyboard(context, user_id, force=True)
+        keyboard = get_main_menu("yes", dynamic_buttons)
+        if keyboard:
+            await context.bot.send_message(
+                chat_id=int(user_id),
+                text="⏳ Устройство не ответило. Возвращаем управление в исходное состояние.",
+                reply_markup=keyboard,
+                disable_notification=True,
+            )
+            log(f"[✅] Оповещение и меню отправлены для {user_id}")
+
         return False
-
-    last_status = context.bot_data.get("last_gate_status")
-    last_time = context.user_data.get("last_command_timestamp")
-
-    if not last_status:
-        await update.message.reply_text(
-            "⚠️ Устройство не прислало статус.",
-            disable_notification=True,
-        )
-        return False
-
-    status_user_id = last_status.get("user_id")
-    status_timestamp = last_status.get("timestamp")
-    delta = (status_timestamp - last_time).total_seconds()
-
-    log(f"[DEBUG] Разница времени: {delta:.2f} сек")
-
-    if status_user_id != user_id or status_timestamp < last_time or delta > timeout + 3:
-        await update.message.reply_text(
-            "⚠️ Устройство не подтвердило команду вовремя.",
-            disable_notification=True,
-        )
-        return False
-
-    log(f"[✅] Arduino подтвердило команду '{command_name}' от {user_id}")
-    return True
 
 
 def on_disconnect(client, userdata, rc, properties):
@@ -267,14 +257,14 @@ def on_disconnect(client, userdata, rc, properties):
         log("[ℹ️] MQTT отключился по инициативе клиента (rc=0)")
 
 
-def get_dynamic_keyboard(context, user_id=None):
+def get_dynamic_keyboard(context, user_id=None, force=False):
     user_id = str(user_id)
     state = gate_state.get("current", "IDLE")
     active_user = str(context.bot_data.get("active_user_id"))
     # log(f"[📲] Кнопки запрошены: user_id={user_id}, active_user={active_user}")
 
     # Только активному пользователю отображаем динамическую клавиатуру
-    if user_id != active_user:
+    if not force and user_id != active_user:
         log(f"[🔒] Пользователь не является активным — кнопки не отображаются")
         return None
 
