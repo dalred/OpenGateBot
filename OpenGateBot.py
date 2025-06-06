@@ -1,3 +1,6 @@
+import asyncio
+
+active_user_lock = asyncio.Lock()
 import os
 import re
 import time
@@ -31,6 +34,7 @@ from telegram.ext import (
 )
 from telegram import ReplyKeyboardRemove
 from telegram.error import NetworkError
+from telegram.ext import PicklePersistence
 
 from telegram import InlineKeyboardMarkup, InlineKeyboardButton
 import paho.mqtt.publish as publish
@@ -74,8 +78,71 @@ async def is_too_soon(update, context) -> bool:
         log(f"❌ Повторное открытие пользователем: user_id={user_id}")
         return True
 
-    context.user_data["last_gate_call"] = now
-    return False
+    return False  # 👈 только проверка, больше ничего!
+
+
+async def handle_gate_command(
+    command: str, update: Update, context: ContextTypes.DEFAULT_TYPE
+):
+    user = update.effective_user
+    user_id = str(user.id)
+    username = user.username or "unknown"
+
+    # ⛔ Защита от параллельных вызовов
+    if user_id in pending_confirmations:
+        print(f"[BLOCKED] {user_id} уже в очереди — повторный вызов")
+        await update.message.reply_text(
+            "⏳ Уже выполняется команда. Дождитесь ответа от устройства."
+        )
+        return
+
+    pending_confirmations.add(user_id)
+    print(f"[DEBUG] добавлен в очередь: {user_id}")
+
+    try:
+        if await is_too_soon(update, context):
+            return
+
+        if not await is_gate_access_granted(user_id, update):
+            return
+
+        access_time = get_access_time_for_user(user_id)
+        if not access_time or not check_access_time(access_time):
+            await update.message.reply_text("🕒 Время доступа истекло.")
+            return
+
+        if not await is_gate_available_for_user(user_id, context):
+            await update.message.reply_text("🚫 Калитка занята другим пользователем.")
+            return
+
+        async with active_user_lock:
+            context.bot_data["active_user_id"] = user_id
+            context.bot_data["active_user_since"] = datetime.now()
+            log(
+                f"[🆗] Назначен активный пользователь: {user_id}, username={user.username}"
+            )
+
+        timestamp_str = send_gate_command(command, user_id, username)
+        if not timestamp_str:
+            await update.message.reply_text("❌ Ошибка отправки команды.")
+            return
+
+        context.user_data["last_command_timestamp"] = isoparse(timestamp_str)
+
+        success = await wait_for_arduino_confirmation(
+            context=context,
+            user_id=user_id,
+            update=update,
+            command_name=command,
+        )
+
+        if success:
+            context.user_data["last_gate_call"] = datetime.now()
+            log(f"Команда {command} выполнена.")
+        return success
+    finally:
+        pending_confirmations.discard(user_id)
+        log(f"[🧹] {user_id} удалён из очереди pending_confirmations")
 
 
 gate_state = {"current": "IDLE"}
@@ -83,86 +150,121 @@ gate_state = {"current": "IDLE"}
 
 def process_gate_status(data, context):
     try:
+        status = data.get("status")
+        user_id = str(data.get("user_id"))
         context.bot_data["last_gate_status"] = {
             "status": data["status"],
             "user_id": str(data["user_id"]),
             "timestamp": isoparse(data["timestamp"]),
         }
-        # log(f"[📥] Arduino status: {data['status']} от user_id={data['user_id']}")
+        active_user = str(context.bot_data.get("active_user_id"))
+        if status == "IDLE" and user_id == active_user:
+            context.bot_data["active_user_id"] = None
+            log(f"[🧹] Активный пользователь {user_id} сброшен — статус IDLE")
+
     except Exception as e:
         log(f"[❌] Ошибка обработки status от Arduino: {e}")
 
 
+pending_confirmations = set()
+
+
+async def send_and_confirm_command(
+    command: str,
+    user_id: str,
+    username: str,
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> bool:
+    context.bot_data["active_user_id"] = str(user_id)
+    # log(f"[🆗] Назначен активный пользователь: {user_id}, username={username}")
+
+    timestamp_str = send_gate_command(command, user_id, username)
+    if not timestamp_str:
+        await update.message.reply_text("❌ Ошибка отправки команды.")
+        return False
+
+    context.user_data["last_command_timestamp"] = isoparse(timestamp_str)
+
+    success = await wait_for_arduino_confirmation(
+        context=context,
+        user_id=user_id,
+        update=update,
+        command_name=command,
+    )
+
+    if success:
+        context.user_data["last_gate_call"] = datetime.now()
+
+    return success
+
+
 async def wait_for_arduino_confirmation(
-    context,
+    context: ContextTypes.DEFAULT_TYPE,
     user_id: str,
     update: Update,
     command_name: str,
     timeout: int = ARDUINO_CONFIRM_TIMEOUT,
-):
+) -> bool:
     await update.message.reply_text(
         "📤 Команда отправлена. Ожидаем подтверждение от калитки...",
         disable_notification=True,
     )
 
-    # Создаём событие ожидания подтверждения
+    # Создаём событие для ожидания
     event = asyncio.Event()
     context.bot_data["confirm_event"] = event
     context.bot_data["last_command_user"] = user_id
 
     try:
-        # Ожидаем, пока событие не будет установлено MQTT-обработчиком
         await asyncio.wait_for(event.wait(), timeout=timeout)
     except asyncio.TimeoutError:
-        log(f"Устройство не ответило вовремя.")
+        log("⚠️ Устройство не ответило вовремя.")
         await update.message.reply_text(
             "⚠️ Устройство не ответило вовремя.",
             disable_notification=True,
         )
-        return
+        return False
 
     last_status = context.bot_data.get("last_gate_status")
     last_time = context.user_data.get("last_command_timestamp")
 
-    # log(f"last_status:{last_status}, last_time:{last_time}")
-
     if not last_status:
         await update.message.reply_text(
-            "⚠️ Устройство не ответило. Возможно, оно недоступно.",
+            "⚠️ Устройство не прислало статус.",
             disable_notification=True,
         )
-        return
+        return False
 
     status_user_id = last_status.get("user_id")
     status_timestamp = last_status.get("timestamp")
-
-    # Вычисляем разницу во времени
     delta = (status_timestamp - last_time).total_seconds()
+
     log(f"[DEBUG] Разница времени: {delta:.2f} сек")
 
     if status_user_id != user_id or status_timestamp < last_time or delta > timeout + 3:
         await update.message.reply_text(
-            "⚠️ Устройство не подтвердило команду в пределах времени.",
+            "⚠️ Устройство не подтвердило команду вовремя.",
             disable_notification=True,
         )
-    else:
-        log(f"[✅] Устройство подтвердило команду '{command_name}' от {user_id}")
-        # await update.message.reply_text(
-        #     "✅ Устройство подтвердило выполнение команды.",
-        #     disable_notification=True,
-        # )
+        return False
+
+    log(f"[✅] Arduino подтвердило команду '{command_name}' от {user_id}")
+    return True
 
 
 async def is_gate_available_for_user(
     user_id: str, context: ContextTypes.DEFAULT_TYPE
 ) -> bool:
-    last_user_id = context.bot_data.get("last_active_user_id")
+    active_user = context.bot_data.get("active_user_id")
     state = gate_state.get("current", "IDLE")
     log(f"[DEBUG] Текущее состояние калитки: {state}")
+    log(f"[DEBUG] Активный пользователь: {active_user}")
 
-    if last_user_id and last_user_id != user_id and state != "IDLE":
-        return False  # Калитка занята другим
-    return True  # Всё в порядке
+    if active_user and active_user != user_id and state != "IDLE":
+        log(f"[BLOCKED] {user_id=} отклонён: уже активен {active_user}")
+        return False
+    return True
 
 
 def on_disconnect(client, userdata, rc, properties):
@@ -180,11 +282,11 @@ def on_disconnect(client, userdata, rc, properties):
 def get_dynamic_keyboard(context, user_id=None):
     user_id = str(user_id)
     state = gate_state.get("current", "IDLE")
-    last_user = str(context.bot_data.get("last_active_user_id"))
-    # log(f"[📲] Кнопки запрошены: user_id={user_id}, last_user={last_user}")
+    active_user = str(context.bot_data.get("active_user_id"))
+    # log(f"[📲] Кнопки запрошены: user_id={user_id}, active_user={active_user}")
 
     # Только активному пользователю отображаем динамическую клавиатуру
-    if user_id != last_user:
+    if user_id != active_user:
         log(f"[🔒] Пользователь не является активным — кнопки не отображаются")
         return None
 
@@ -255,9 +357,16 @@ def on_mqtt_message(client, userdata, msg, properties=None):
 
         # Формируем клавиатуру
         if payload == "IDLE":
-            context.bot_data["last_active_user_id"] = None
-            log("[🔁] Сброс активного пользователя (IDLE)")
-            log("[🔁] Калитка перешла в режим ожидания")
+
+            async def reset_active_user():
+                async with active_user_lock:
+                    context.bot_data["active_user_id"] = context.bot_data.get(
+                        "active_user_id"
+                    )
+                    context.bot_data["active_user_id"] = None
+                    context.bot_data["active_user_since"] = None
+                    log("[🔁] Сброс активного пользователя (IDLE)")
+                    log("[🔁] Калитка перешла в режим ожидания")
 
             keyboard = get_main_menu(status="yes", dynamic_buttons=None)
             text = "🔒"
@@ -276,8 +385,9 @@ def on_mqtt_message(client, userdata, msg, properties=None):
             return
         else:
             # Обновляем last_active_user_id
-            if user_id:
-                context.bot_data["last_active_user_id"] = user_id
+            async def update_last_active():
+                async with active_user_lock:
+                    context.bot_data["active_user_id"] = user_id
 
             dynamic_buttons = get_dynamic_keyboard(context, user_id=user_id)
             keyboard = get_main_menu("yes", dynamic_buttons)
@@ -310,7 +420,7 @@ def on_mqtt_message(client, userdata, msg, properties=None):
 
 
 def init_mqtt(application, context):
-    context.bot_data["last_active_user_id"] = None
+    context.bot_data["active_user_id"] = None
     client_id = f"client_{random.randint(1, 100000)}"
     client = mqtt.Client(
         client_id=client_id,
@@ -506,8 +616,8 @@ async def help_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     status = get_user_status(user_id)
 
     # Проверяем, активен ли пользователь по статусу И назначен ли он last_active
-    last_user = str(context.bot_data.get("last_active_user_id"))
-    is_active = status == "yes" and user_id == last_user
+    active_user = str(context.bot_data.get("active_user_id"))
+    is_active = status == "yes" and user_id == active_user
 
     # Формируем клавиатуру
     dynamic_buttons = (
@@ -718,149 +828,37 @@ async def my_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def open_gate(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    user_id = str(user.id)
-    username = user.username or "unknown"
-
-    # log(f"open_gate нажат")
-
-    if await is_too_soon(update, context):
-        return
-
-    if not await is_gate_access_granted(user_id, update):
-        return
-    else:
-        log(f"[🔓] Разрешённый доступ: user_id={user_id}, username={user.username}")
-
-    access_time = get_access_time_for_user(user_id)
-
-    if not access_time or not check_access_time(access_time):
-        log(
-            f"[⏰] Попытка доступа к калитке вне времени: user_id={user_id},username={user.username} access_time={access_time}"
-        )
-        await safe_reply(
-            update.message,
-            "🕒 Доступ к калитке возможен только в разрешённое время.",
-        )
-        return
-    else:
-        log(f"[🔓] username={user.username} time is OK")
-
-    log(f"[🆗] Назначен активный пользователь: {user_id}, username={user.username}")
-
-    # ⛔ Проверка: если уже другой активный пользователь
-    if not await is_gate_available_for_user(user_id, context):
-        await update.message.reply_text(
-            "🚫 Калитка сейчас используется другим пользователем."
-        )
-        return
-
-    # 📤 Отправляем команду
-
-    timestamp_str = send_gate_command("OPEN", user_id, username)
-    if not timestamp_str:
-        await update.message.reply_text("❌ Ошибка отправки команды.")
-        return
-    context.user_data["last_command_timestamp"] = isoparse(timestamp_str)
-    await wait_for_arduino_confirmation(
-        context=context, user_id=user_id, update=update, command_name="OPEN"
-    )
-    log(
-        f"[🔓] Попытка открытия калитки по запросу: user_id={user.id}, username={user.username}"
-    )
-
-    # ⏳ Ответ пользователю (без клавиатуры)
-    # await update.message.reply_text(
-    #     "📤 Команда отправлена. Ожидаем подтверждение от калитки..."
-    # )
+    await handle_gate_command("OPEN", update, context)
 
 
 async def stop_gate(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    user_id = str(user.id)
-    username = user.username or "unknown"
-
-    if await is_too_soon(update, context):
-        return
-
-    if not await is_gate_access_granted(user_id, update):
-        return
-
-    access_time = get_access_time_for_user(user_id)
-
-    if not access_time or not check_access_time(access_time):
+    user_id = str(update.effective_user.id)
+    success = await handle_gate_command("STOP", update, context)
+    if success:
+        dynamic_buttons = get_dynamic_keyboard(context, user_id=user_id)
+        keyboard = get_main_menu("yes", dynamic_buttons)
         log(
-            f"[⏰] Попытка доступа к калитке вне времени: user_id={user_id},username={user.username} access_time={access_time}"
+            f"[🟥] Команда STOP завершена для user_id={user_id}, username={update.effective_user.username}"
         )
-        await safe_reply(
-            update.message,
-            "🕒 Доступ к калитке возможен только в разрешённое время.",
-        )
-        return
     else:
-        log(f"[🔓] username={user.username} time is OK")
-
-    if not await is_gate_available_for_user(user_id, context):
-        await update.message.reply_text(
-            "🚫 Калитка сейчас используется другим пользователем."
+        log(
+            f"[⚠️] Команда STOP не выполнена или отменена для {user_id}, @{update.effective_user.username}"
         )
-        return
-
-    timestamp_str = send_gate_command("STOP", user_id, username)
-    if not timestamp_str:
-        await update.message.reply_text("❌ Ошибка отправки команды.")
-        return
-    context.user_data["last_command_timestamp"] = isoparse(timestamp_str)
-    await wait_for_arduino_confirmation(
-        context=context, user_id=user_id, update=update, command_name="STOP"
-    )
-
-    dynamic_buttons = get_dynamic_keyboard(context, user_id=user_id)
-    keyboard = get_main_menu("yes", dynamic_buttons)
 
 
 async def close_gate(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    user_id = str(user.id)
-    username = user.username or "unknown"
-
-    if await is_too_soon(update, context):
-        return
-
-    if not await is_gate_access_granted(user_id, update):
-        return
-
-    access_time = get_access_time_for_user(user_id)
-
-    if not access_time or not check_access_time(access_time):
+    success = await handle_gate_command("CLOSE", update, context)
+    user_id = str(update.effective_user.id)
+    if success:
+        dynamic_buttons = get_dynamic_keyboard(context, user_id=user_id)
+        keyboard = get_main_menu("yes", dynamic_buttons)
         log(
-            f"[⏰] Попытка доступа к калитке вне времени: user_id={user_id},username={user.username} access_time={access_time}"
+            f"Команда CLOSE завершена для user_id={user_id}, username={update.effective_user.username}"
         )
-        await safe_reply(
-            update.message,
-            "🕒 Доступ к калитке возможен только в разрешённое время.",
-        )
-        return
     else:
-        log(f"[🔓] username={user.username} time is OK")
-
-    if not await is_gate_available_for_user(user_id, context):
-        await update.message.reply_text(
-            "🚫 Калитка сейчас используется другим пользователем."
+        log(
+            f"[⚠️] Команда CLOSE не выполнена или отменена для {user_id}, @{update.effective_user.username}"
         )
-        return
-
-    timestamp_str = send_gate_command("CLOSE", user_id, username)
-    if not timestamp_str:
-        await update.message.reply_text("❌ Ошибка отправки команды.")
-        return
-    context.user_data["last_command_timestamp"] = isoparse(timestamp_str)
-    await wait_for_arduino_confirmation(
-        context=context, user_id=user_id, update=update, command_name="STOP"
-    )
-
-    dynamic_buttons = get_dynamic_keyboard(context, user_id=user_id)
-    keyboard = get_main_menu("yes", dynamic_buttons)
 
 
 async def notify_admin_about_request(
@@ -965,7 +963,7 @@ async def is_gate_access_granted(user_id: str, update: Update) -> bool:
 
 
 async def main():
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
+    app = ApplicationBuilder().token(BOT_TOKEN).concurrent_updates(True).build()
     app.bot_data["event_loop"] = asyncio.get_event_loop()
 
     conv_handler = ConversationHandler(
