@@ -1,7 +1,5 @@
 python-telegram-bot[webhooks]
 paho-mqtt
-gspread
-oauth2client
 python-dotenv
 nest_asyncio
 python-dateutil

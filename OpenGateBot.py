@@ -677,7 +677,11 @@ async def ask_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
         phone = text.strip()
     else:
         await safe_reply(
-            update.message, "⚠️ Введите номер корректно или используйте кнопку."
+            update.message,
+            "⚠️ Пожалуйста, введите номер телефона в формате:\n"
+            "`+79123456789` или `89123456789`\n\n"
+            "Также можно нажать кнопку ниже 👇",
+            parse_mode="Markdown",
         )
         return ASK_PHONE
 
