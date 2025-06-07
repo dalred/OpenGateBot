@@ -325,7 +325,7 @@ def on_mqtt_message(client, userdata, msg, properties=None):
 
         if user_id:
             log(
-                f"[MQTT] Активный пользователь (из payload): {user_id}, username={username}"
+                f"[MQTT] Устройство прислало статус от user_id={user_id}, username={username}"
             )
         else:
             log("[MQTT] Пользователь в payload не указан")
