@@ -24,6 +24,7 @@ from access_db import (
 from dotenv import load_dotenv
 from telegram import Update, KeyboardButton, ReplyKeyboardMarkup
 from telegram.ext import (
+    ContextTypes,
     ApplicationBuilder,
     CommandHandler,
     MessageHandler,
@@ -63,6 +64,12 @@ ASK_NAME, ASK_PHONE = range(2)
 def log(msg):
     now = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
     print(f"[{now}] {msg}")
+
+
+async def handle_old_gate_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    await start(update, context)
 
 
 async def is_too_soon(update, context) -> bool:
@@ -997,6 +1004,7 @@ async def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, unknown_input))
+    app.add_handler(CallbackQueryHandler(handle_old_gate_button, pattern="^ON$"))
 
     if MODE == "webhook":
         print("🚀 Запуск в WEBHOOK режиме. Введите /start в Telegram.")
