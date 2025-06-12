@@ -46,6 +46,7 @@ load_dotenv()
 moscow = pytz.timezone("Europe/Moscow")
 min_interval_seconds = int(os.getenv("MIN_INTERVAL_SECONDS", "7"))
 ARDUINO_CONFIRM_TIMEOUT = int(os.getenv("ARDUINO_CONFIRM_TIMEOUT", "10"))
+IDLE_RESET_DELAY = int(os.getenv("IDLE_RESET_DELAY", "90"))
 MIN_INTERVAL = timedelta(seconds=min_interval_seconds)
 last_used_time = {}
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -64,6 +65,38 @@ ASK_NAME, ASK_PHONE = range(2)
 def log(msg):
     now = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
     print(f"[{now}] {msg}")
+
+
+async def schedule_idle_reset(context, user_id, activation_time):
+    await asyncio.sleep(IDLE_RESET_DELAY)
+
+    active_id = context.bot_data.get("active_user_id")
+    since = context.bot_data.get("active_user_since")
+
+    if (
+        active_id == user_id
+        and since == activation_time
+        and gate_state.get("current") != "IDLE"
+    ):
+        context.bot_data["active_user_id"] = None
+        gate_state["current"] = "IDLE"
+        log(f"[⏱] Резервный сброс: {user_id} → IDLE")
+
+        # ♻️ Обновление UI
+        dynamic_buttons = get_dynamic_keyboard(context, user_id, force=True)
+        keyboard = get_main_menu("yes", dynamic_buttons)
+        if keyboard:
+            await context.bot.send_message(
+                chat_id=int(user_id),
+                text="⏳ Устройство не прислало сигнал завершения. Возвращаем управление в исходное состояние.",
+                reply_markup=keyboard,
+                disable_notification=True,
+            )
+            log(f"[✅] Резервный сброс: меню отправлено для {user_id}")
+    else:
+        log(
+            f"[✅] Резервный сброс отменён: статус уже обновлён или пользователь сменился"
+        )
 
 
 async def handle_old_gate_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -127,8 +160,10 @@ async def handle_gate_command(
                 log(f"[BLOCKED] {user_id=} отклонён: уже активен {current_active}")
                 return
 
+            activation_time = datetime.now()
             context.bot_data["active_user_id"] = user_id
-            context.bot_data["active_user_since"] = datetime.now()
+            context.bot_data["active_user_since"] = activation_time
+            asyncio.create_task(schedule_idle_reset(context, user_id, activation_time))
             log(f"[🆗] Назначен активный пользователь: {user_id}, username={username}")
 
         timestamp_str = send_gate_command(command, user_id, username)
