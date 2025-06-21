@@ -1026,6 +1026,7 @@ async def main():
     )
 
     app.add_handler(conv_handler)
+    app.add_handler(CallbackQueryHandler(handle_old_gate_button, pattern="ON"))
     app.add_handler(CallbackQueryHandler(handle_admin_decision))
     app.add_handler(CommandHandler("myid", my_id))
     app.add_handler(MessageHandler(filters.Regex("🏁 Начало"), start))
@@ -1039,7 +1040,6 @@ async def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, unknown_input))
-    app.add_handler(CallbackQueryHandler(handle_old_gate_button, pattern == "ON"))
 
     if MODE == "webhook":
         print("🚀 Запуск в WEBHOOK режиме. Введите /start в Telegram.")
