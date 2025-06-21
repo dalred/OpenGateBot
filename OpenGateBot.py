@@ -63,8 +63,22 @@ ASK_NAME, ASK_PHONE = range(2)
 
 
 def log(msg):
-    now = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
-    print(f"[{now}] {msg}")
+    now = datetime.now()
+    timestamp = now.strftime("%d.%m.%Y %H:%M:%S")
+    date_str = now.strftime("%d-%m-%Y")
+    log_line = f"[{timestamp}] {msg}"
+
+    print(log_line)
+
+    log_dir = "logs"
+    os.makedirs(log_dir, exist_ok=True)
+    log_file_path = os.path.join(log_dir, f"{date_str}.log")
+
+    try:
+        with open(log_file_path, "a", encoding="utf-8") as f:
+            f.write(log_line + "\n")
+    except Exception as e:
+        print(f"[log error] {e}")
 
 
 async def schedule_idle_reset(context, user_id, activation_time):
