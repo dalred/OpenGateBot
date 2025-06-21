@@ -102,6 +102,10 @@ async def schedule_idle_reset(context, user_id, activation_time):
 async def handle_old_gate_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+
+    # 👇 подставляем message, чтобы start не упал
+    update.message = query.message
+
     await start(update, context)
 
 
