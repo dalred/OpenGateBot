@@ -100,12 +100,7 @@ async def schedule_idle_reset(context, user_id, activation_time):
 
 
 async def handle_old_gate_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-
-    # 👇 подставляем message, чтобы start не упал
-    update.message = query.message
-
+    await update.callback_query.answer()
     await start(update, context)
 
 
@@ -609,7 +604,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     status = get_user_aprove_status(user_id) or "none"
     context.user_data["access_status"] = status
 
-    await update.message.reply_text(
+    msg = update.message or (update.callback_query and update.callback_query.message)
+
+    if not msg:
+        log("⚠️ Нет сообщения, куда можно отправить reply_text.")
+        return
+
+    await msg.reply_text(
         f"👋 Привет, {user.first_name or username}!", reply_markup=get_main_menu(status)
     )
     # log("📲 Старт: выход из ConversationHandler")
